@@ -96,6 +96,7 @@ sing-model/
 docs/PROTOCOL.md      插件 ↔ 网关 HTTP 契约（想用别的语言重写后端看这个）
 docs/TUNNEL.md        把本机网关暴露成 https 的三种做法
 docs/TROUBLESHOOTING.md  排错（含容器化 OneBot 发文件失败那个坑）
+docs/TUNING.md       调优与踩坑笔记（时长四道闸、显存、历史踩坑、验收清单）
 scripts/bridge-container-paths.sh  把插件媒体目录桥接进 OneBot 容器
 start-gateway.bat / start-tunnel.bat  Windows 一键启动
 test/                 32 个用例（含"子进程跑插件、测试扮演宿主"的真协议测试）
@@ -365,26 +366,35 @@ sudo bash scripts/bridge-container-paths.sh
 | 更新网关 | 改 `gateway/` 代码后重启 `node gateway/server.mjs` |
 | 暂停/卸载 | 控制台停用插件即可；彻底卸载删掉 `data/plugins/sing`，宿主立即恢复原状（宿主源码一行未被改动） |
 
-### 显存占用
-
-换声是全 GPU 的活：BS-Roformer 分离 + RVC 推理，3080 10G 上实测峰值约 9.4G。为了不把显卡占满，`sing-model/run.py` 默认给子进程加了一道显存闸：
-
-```bash
-# 默认 85%，也就是最多用 8.7G；改法：在 voice.command 里加参数
-python run.py --gpu-fraction 0.75 ...
-```
-
-实现是 `sing-model/gpu_cap/sitecustomize.py`（Python 启动时自动套用 `torch.cuda.set_per_process_memory_fraction`），不改 RVC 一行代码；同时设了 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 减少碎片。调太低会 OOM（任务会如实报错，不会假装成功）。
-
 ## 七、已知限制（诚实版）
 
-1. **语音条时长尚未定论**：60 秒是「手机 QQ 录音」的限制，服务端对 record 段的策略随协议端不同。
-   现在上限可配：插件设置「语音条唱多久」默认 180 秒、网关硬上限 300 秒，被 QQ 拒就调小。
-2. **普通说话会失败**：网关只做唱歌，不做 TTS。宿主发语音失败会自动退回文字，不会丢消息。
-3. **一次只跑一个任务**：换声吃显存，网关串行排队（故意的）。
-4. **首次点歌慢**：每次都要重新加载模型（10 秒上下）。
-5. **网易云 VIP 曲**：匿名拿不到直链，需填 `neteaseCookie`；否则自动降级翻唱版。
-6. **模型与音源版权**：`.pth` 权重、翻唱成品的使用范围请自行确认。
+1. **普通说话会失败**：网关只做唱歌、不做 TTS。宿主发语音失败会自动退回文字，不会丢消息。
+2. **一次只跑一个任务**：换声吃显存，网关串行排队（故意的）。
+3. **首次点歌慢**：每次都要重新加载模型（10 秒上下）。
+4. **网易云 VIP 曲**：没有登录态取不到原唱；网关会先试同一首的其它可播版本，都不行就明确报"需要 VIP"并引导扫码登录。
+5. **模型与音源版权**：`.pth` 权重、翻唱成品的使用范围请自行确认。
+
+### 能唱多长
+
+**四道闸，任何一道小都会把时长夹回去**；`/health` 会把生效值和两个上限一起报出来：
+
+| 闸 | 默认 | 在哪改 |
+|---|---|---|
+| ① 插件「语音条唱多久」 | 90 秒 | 控制台 → 插件 → 点歌唱歌 |
+| ② 网关 `voiceMessageMaxSeconds` | 300 秒 | `gateway/config.json` |
+| ③ 网关 `maxSeconds`（单次任务上限，群文件也受它管） | 300 秒 | `gateway/config.json` |
+| ④ 宿主 TTS 超时 `tts.timeoutMs` | 600000（10 分钟） | 控制台 → 设置 → 语音回复 |
+
+耗时参考（RTX 3080 10G）：90 秒约 25-30 秒出结果；240 秒约 4-5 分钟。
+另有两条物理限制：宿主 `/audio/speech` 响应上限 **4MB**（96kbps ≈ 5.7 分钟），以及 QQ 语音条自身时长上限。
+
+### 显存
+
+换声是全 GPU 的活，3080 10G 上峰值约 9.4G。`run.py` 默认用 `--gpu-fraction 0.85` 给子进程上闸（最多 8.7G），
+想更低就传 `0.75`；阈值太低会 OOM，任务会如实报错。
+
+> 想深挖原理、看历史踩坑与排查顺序，见 **[docs/TUNING.md](docs/TUNING.md)**。
+
 
 ## 八、排错
 
@@ -471,42 +481,6 @@ nginx -t && systemctl reload nginx
 
 > 宿主的 `NODE_EXTRA_CA_CERTS=/opt/qq-agent/tls/ca.crt` 一直留着没坏处（只影响自签那几条链路）。
 > 证书链坏了（CA 重建过）就跑 `bash reissue-server-cert.sh`。
-
-### 关于「能唱多长」
-
-三道闸，改哪一道都行：
-
-**一共有四道闸，任何一道小都会把时长夹回去**（`/health` 会把后三个都报出来，方便对照）：
-
-| 闸 | 默认 | 在哪改 |
-|---|---|---|
-| ① 插件设置「语音条唱多久」 | 90 秒 | 控制台 → 插件 → 点歌唱歌（插件把值推给网关，立即生效） |
-| ② 网关 `voiceMessageMaxSeconds` | 300 秒 | `gateway/config.json`（语音条通道硬上限） |
-| ③ 网关 `maxSeconds`（job 级） | 300 秒 | `gateway/config.json`（**单次任务**上限，群文件通道也受它管） |
-| ④ 宿主 TTS 超时 `tts.timeoutMs` | 600000（10 分钟） | 控制台 → 设置 → 语音回复，或 `POST /api/config` |
-
-> 踩过的坑：插件里填了 240 却只唱 180 —— 因为 ③ 当时是 180，它才是最后拍板的那个。
-> 排查时先看 `/health`：`voiceSeconds` 是当前生效值，`voiceMaxSeconds` / `jobMaxSeconds` 是 ②③。
-
-耗时参考（RTX 3080 10G）：90 秒成品约 25-30 秒；240 秒成品约 4-5 分钟（分离和换声都按整段算）。
-
-另外两条物理限制：宿主对 `/audio/speech` 的响应上限 **4MB**（96kbps 单声道 ≈ 5.7 分钟），以及 QQ 语音条自身的时长上限（各协议端不同，被拒时机器人会回退成文字）。
-要走长音频（几分钟）用群文件通道：把「允许发群文件」打开，插件工具的超时是 180 秒，`maxSeconds` 上限 180。
-
-### 关于「只能唱 30 秒」（旧问题，已修）（旧问题，已修）
-
-30 秒几乎都是 **iTunes 试听段** 的长度（Apple 只提供 30 秒 preview）。出现顺序是：
-
-```
-网易云搜歌 → 第 1 条是 VIP 原唱（拿不到直链）
-           → 旧行为：立刻退回 iTunes 试听段（30 秒）❌
-           → 新行为：先试其它网易云候选（常常有完整翻唱版/现场版），实在都没有才用试听段 ✅
-```
-
-另外歌词/音频完整度还取决于音源本身：`voiceMessageDefaultSeconds`（默认 180）只决定"要唱多久"，
-源只有 30 秒就只能出 30 秒。想要原唱完整版，在 `gateway/config.json` 填 `source.neteaseCookie`（VIP）。
-
----
 
 ## 十一、网易云扫码登录（拿 VIP 曲的原唱）
 
