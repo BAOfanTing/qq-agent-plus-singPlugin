@@ -3,7 +3,7 @@
   "apiVersion": 2,
   "name": "点歌唱歌",
   "version": "0.1.0",
-  "description": "点一首歌，让机器人用你训练好的音色翻唱，并把成品发到群里。换声与搜歌在你自己的电脑上跑（gateway/），插件只做转发。",
+  "description": "点一首歌，让机器人用你训练好的音色翻唱，并把成品发到群里。换声与搜歌在你自己的电脑上跑（gateway/），插件只做转发。登录网易云（插件页「扫码登录」）后可唱 VIP 曲原唱。",
   "entry": "index.mjs",
   "engines": {
     "minVersion": "0.9.10"
@@ -120,6 +120,12 @@
   ],
   "settings": {
     "groups": [
+      {
+        "key": "neteaseLogin",
+        "title": "网易云登录",
+        "description": "点本页下方「扫码登录」按钮，用手机网易云 App 扫码（二维码由本插件本地生成，不上传任何数据）；也可以直接打开 <网关地址>/login?token=<网关令牌> 扫码。⚠️ 面板标题里出现的「B 站」是宿主界面的固定文案，不影响登录。",
+        "fields": []
+      },
       {
         "key": "gateway",
         "title": "点歌后端",
