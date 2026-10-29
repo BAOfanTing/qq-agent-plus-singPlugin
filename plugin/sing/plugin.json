@@ -27,8 +27,39 @@
   "httpMaxBytes": 131072,
   "tools": [
     {
+      "name": "login",
+      "timeoutMs": 30000,
+      "description": "网易云扫码登录。action=start：请求一张登录二维码（channel=console 返回给控制台网页显示，channel=chat 发到当前会话）；action=poll：查扫码结果，成功后 Cookie 由网关保存并立即生效；action=status / logout。控制台插件页的「扫码登录」按钮走的就是这条路。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "start",
+              "poll",
+              "status",
+              "logout"
+            ],
+            "description": "start 发码 / poll 查结果 / status 看登录 / logout 退出"
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "console",
+              "chat"
+            ],
+            "description": "console=返回给控制台显示（默认）；chat=发到当前会话"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
+    },
+    {
       "name": "sing_song",
-      "description": "点歌并把翻唱结果作为【群文件】发到当前群（几十秒，可下载）。⚠️ 如果用户要的是「语音」「语音条」「直接发语音」，不要用这个工具，改用 send_voice 并把输入写成「唱：歌名」——那条路发的是 QQ 语音条。",
+      "description": "点歌并把翻唱结果作为【群文件】发到当前群（几十秒，可下载）。⚠️ 默认关闭：设置里「允许发群文件」未开时本工具会直接拒绝。平时请用 send_voice 并把输入写成「唱：歌名」，那条路发的是 QQ 语音条。",
       "timeoutMs": 180000,
       "parameters": {
         "type": "object",
@@ -120,6 +151,13 @@
             "type": "text",
             "default": "",
             "help": "网关配置里的音色名（比如 me）；留空表示用网关的默认值"
+          },
+          {
+            "key": "allowFileOutput",
+            "label": "允许发群文件（默认关）",
+            "type": "boolean",
+            "default": false,
+            "help": "关闭时只用语音条（宿主 send_voice 通道）；开启后模型才会用群文件发 mp3。关着时点歌工具会提示改用语音。"
           },
           {
             "key": "maxSeconds",

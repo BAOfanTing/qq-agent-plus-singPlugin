@@ -23,7 +23,38 @@ import {
   describeError
 } from './lib.mjs';
 
+import { createRequire } from 'node:module';
+
+// 内置的二维码库是 UMD/CommonJS：仓库根 package.json 是 type=module，.js 会被当成 ESM，
+// 于是没有 default 导出（实测报 "does not provide an export named 'default'"）。
+// 用 .cjs + createRequire 两边都不会错。
+const require = createRequire(import.meta.url);
+const qrcode = require('./vendor/qrcode.cjs');
+
 const send = (message) => { process.stdout.write(`${JSON.stringify(message)}\n`); };
+
+/** 二维码 → data URL（SVG）。内置 qrcode-generator，不依赖任何外部服务。 */
+function qrDataUrl(text) {
+  const qr = qrcode(0, 'M');
+  qr.addData(text);
+  qr.make();
+  const n = qr.getModuleCount();
+  const scale = 6;
+  const size = (n + 4) * scale;
+  const rects = [];
+  for (let r = 0; r < n; r += 1) {
+    for (let c = 0; c < n; c += 1) {
+      if (qr.isDark(r, c)) {
+        rects.push(`<rect x="${(c + 2) * scale}" y="${(r + 2) * scale}" width="${scale}" height="${scale}"/>`);
+      }
+    }
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><rect width="${size}" height="${size}" fill="#fff"/><g fill="#111">${rects.join('')}</g></svg>`;
+  return `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}`;
+}
+
+// 扫码会话：控制台的 poll 不带参数，所以 key 存在进程内
+let pendingLogin = null;
 
 let requestSeq = 0;
 const pending = new Map();
@@ -142,7 +173,75 @@ async function waitForJob(conf, jobId, { onTick } = {}) {
 }
 
 const tools = {
+
+  /**
+   * 网易云扫码登录。控制台「扫码登录」按钮会以 {action:'start'|'poll'|'status'|'logout', channel:'console'} 调这个工具。
+   * 二维码在插件进程里用内置库生成（data URL），登录 key 只经网关、不出本机。
+   */
+  login: async (args) => {
+    const action = String(args?.action ?? '').trim();
+    const channel = String(args?.channel ?? 'console').trim() === 'chat' ? 'chat' : 'console';
+    const conf = await loadConfig();
+
+    if (action === 'start') {
+      const started = await callGateway(conf, '/login/start', { method: 'POST', body: {} });
+      const key = String(started.key || '');
+      const loginUrl = String(started.loginUrl || '');
+      if (!key || !loginUrl) throw new Error('网关没有返回登录二维码');
+      pendingLogin = { key, loginUrl, at: Date.now(), channel };
+      const dataUrl = qrDataUrl(loginUrl);
+      if (channel === 'chat') {
+        return {
+          ok: true,
+          channel,
+          loginUrl,
+          note: '二维码链接：' + loginUrl + '（在手机网易云 App 里扫码，或让管理员用控制台「扫码登录」按钮）'
+        };
+      }
+      return {
+        ok: true,
+        channel,
+        key,
+        qrcodeDataUrl: dataUrl,
+        note: '用手机网易云 App 扫这个码，手机上点「确认登录」后再点「查扫码结果」（约 4 分钟内有效）。'
+      };
+    }
+
+    if (action === 'poll') {
+      if (!pendingLogin?.key) return { ok: false, state: 'expired', note: '没有进行中的扫码，请重新点「扫码登录」' };
+      const status = await callGateway(conf, `/login/status?key=${encodeURIComponent(pendingLogin.key)}`);
+      const state = String(status.state || '');
+      if (state === 'ok') {
+        pendingLogin = null;
+        return { ok: true, state: 'done', account: '网易云', note: '登录成功，Cookie 已由网关保存并立即生效' };
+      }
+      if (state === 'scanned') return { ok: true, state: 'scanned', note: '已扫码，请在手机上点「确认登录」' };
+      if (state === 'expired') { pendingLogin = null; return { ok: true, state: 'expired', note: '二维码过期了，请重新点「扫码登录」' }; }
+      if (state === 'failed') { pendingLogin = null; return { ok: false, state: 'failed', note: String(status.message || '登录失败') }; }
+      return { ok: true, state: 'waiting', note: '等待扫码中…' };
+    }
+
+    if (action === 'status') {
+      const health = await callGateway(conf, '/health').catch(() => null);
+      return {
+        ok: true,
+        login: Boolean(health?.neteaseCookie),
+        uname: '网易云',
+        note: health?.neteaseCookie ? '已登录（能取 VIP 曲原唱）' : '未登录（只能唱免费曲）'
+      };
+    }
+
+    if (action === 'logout') {
+      await callGateway(conf, '/login/logout', { method: 'POST', body: {} }).catch(() => null);
+      pendingLogin = null;
+      return { ok: true, login: false, note: '已清除网关里的网易云登录态' };
+    }
+
+    throw new Error(`不认识的 action：${action}（只支持 start / poll / status / logout）`);
+  },
+
   /** 给出网易云扫码登录链接（登录态由网关保存，插件只负责把链接递出去）。 */
+
   netease_login: async () => {
     const conf = await loadConfig();
     const base = normalizeGatewayUrl(conf.gatewayUrl, { allowInsecureHttp: conf.allowInsecureHttp });
@@ -214,6 +313,14 @@ const tools = {
       };
     }
     const conf = await loadConfig();
+    // 群文件输出默认关：关着就不碰 cap.send.file，直接让模型改用语音条那条路。
+    if (conf.allowFileOutput !== true) {
+      return {
+        ok: false,
+        error: '群文件输出未开启（插件设置里的「允许发群文件」是关的）。'
+          + '要发语音条请改调 send_voice，并把输入写成「唱：歌名」；确实需要文件请去设置里打开这个开关。'
+      };
+    }
     const song = normalizeSongName(args?.song ?? args?.keyword);
     const voice = normalizeVoice(args?.voice) || conf.defaultVoice;
     const maxSeconds = Math.min(180, Math.max(5, Number(args?.maxSeconds) || conf.maxSeconds));
@@ -270,6 +377,26 @@ const tools = {
   }
 };
 
+
+// 控制台「检测登录」/ 插件页徽标走这条（可选协议方法）
+async function handleProbe(message) {
+  try {
+    const conf = await loadConfig();
+    const health = await callGateway(conf, '/health').catch(() => null);
+    const login = Boolean(health?.neteaseCookie);
+    send({
+      id: message.id,
+      result: {
+        ok: true,
+        info: { login, uname: '网易云', note: login ? '已登录' : '未登录（只能唱免费曲）' },
+        loginInfo: { login, uname: '网易云', measuredAt: Date.now(), note: login ? '已登录' : '未登录' }
+      }
+    });
+  } catch (error) {
+    send({ id: message.id, result: { ok: false, error: String(error?.message ?? error) } });
+  }
+}
+
 async function handleRequest(message) {
   const reply = (payload) => send({ id: message.id, ...payload });
   switch (message.method) {
@@ -278,6 +405,9 @@ async function handleRequest(message) {
       return;
     case 'ping':
       reply({ result: {} });
+      return;
+    case 'probe':
+      await handleProbe(message);
       return;
     case 'schedule': {
       // 宿主只支持 everyMs（没有 cron），所以每小时醒一次，只在本地 0 点拨一下网关清理：

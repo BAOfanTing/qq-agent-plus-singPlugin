@@ -69,6 +69,7 @@ function createHarness({ settings, secrets = { apiToken: 'tok' }, gateway }) {
 
 const SETTINGS = {
   gatewayUrl: 'https://gw.example.com',
+  allowFileOutput: true,   // 本文件测的是「发群文件」那条路
   maxSeconds: 30,
   pollIntervalMs: 1000,
   defaultVoice: 'me'
@@ -194,6 +195,31 @@ test('sing_status / sing_search 的正常返回', async () => {
     assert.equal(search.result.count, 1);
     assert.equal(search.result.items[0].title, '测试曲');
     assert.equal(search.result.items[0].duration, '3 分 20 秒');
+  } finally {
+    harness.stop();
+  }
+});
+
+test('群文件开关默认关：sing_song 直接拒绝并指路语音条', async () => {
+  const settings = { ...SETTINGS, allowFileOutput: false };
+  // 脚手架默认把全局 SETTINGS 当配置回给插件，这里必须让它回本次的 settings，
+  // 否则"开关关着"这件事根本没传给插件。
+  const script = gatewayScript();
+  const harness = createHarness({
+    settings,
+    gateway: ({ method, params }) => (method === 'cap.config.get' ? { settings } : script({ method, params }))
+  });
+  try {
+    harness.init();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    harness.callTool('sing_song', { song: '测试曲' }, { chatKey: 'group:1' });
+    const message = await harness.waitResult();
+    assert.equal(message.result.ok, false);
+    assert.match(message.result.error, /群文件输出未开启/);
+    assert.match(message.result.error, /send_voice/);
+    // 关着的时候不该调任何网关接口，也不该发文件
+    assert.equal(harness.calls.some((c) => c.method === 'cap.http.request'), false);
+    assert.equal(harness.calls.some((c) => c.method === 'cap.send.file'), false);
   } finally {
     harness.stop();
   }

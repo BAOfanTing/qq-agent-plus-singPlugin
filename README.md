@@ -83,6 +83,7 @@ gateway/              跑在你电脑上的换声网关（零依赖 Node）
   lib/app.mjs         路由 + 流水线（/health /search /sing /jobs /files /v1/audio/speech /admin/prune /login*）
   web/login.html      网易云扫码登录页（二维码在本地渲染，key 不出本机）
   web/qrcode.js       内置 QR 生成库（MIT，离线可用，不依赖任何 CDN）
+  plugin/sing/vendor/qrcode.cjs  插件自带的 QR 库（控制台「扫码登录」用；.cjs 是因为仓库是 type=module）
   lib/jobs.mjs        串行任务队列（带进度与 TTL）
 sing-model/
   run.py              换声编排：裁剪 → 分离 → 换声 → 混伴奏（网关调的就是它）
@@ -338,7 +339,7 @@ sudo bash scripts/bridge-container-paths.sh
 | 你说 | 会发生什么 |
 |---|---|
 | 用语音唱一首起风了 | 语音条（走宿主 TTS 通道） |
-| 点歌唱一首起风了 | 群文件 mp3（走插件） |
+| 点歌唱一首起风了 | 群文件 mp3（走插件）—— **需要先在插件设置里打开「允许发群文件」，默认是关的** |
 | 先搜一下 起风了 有哪些版本 | 只搜不出声，返回 5 条候选 |
 | 点歌后端还活着吗 | 查网关在线状态与可用音色 |
 
@@ -477,7 +478,8 @@ nginx -t && systemctl reload nginx
 
 登录方式（不用手抄 Cookie）：
 
-1. 打开 `https://<你的网关地址>/login?token=<网关令牌>`（本机就是 `http://127.0.0.1:8899/login?token=…`）
+1. **控制台 → 插件 → 点歌唱歌 → 「扫码登录」**（推荐，二维码直接显示在插件页里）
+   或者打开 `https://<你的网关地址>/login?token=<网关令牌>`（本机：`http://127.0.0.1:8899/login?token=…`）
 2. 用手机**网易云 App** 扫页面上的二维码
 3. 手机上点「确认登录」，页面显示成功即可
 

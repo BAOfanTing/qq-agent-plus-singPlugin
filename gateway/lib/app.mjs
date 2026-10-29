@@ -365,7 +365,9 @@ export function createApp({
       return;
     }
     if (pathname.startsWith('/login/')) {
-      const given = String(url.searchParams.get('token') || req.headers['x-gateway-token'] || '').trim();
+      // 三种来源都认：?token=（浏览器页面）、x-gateway-token（页面 JS）、Authorization: Bearer（插件调用）
+      const bearer = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+      const given = String(url.searchParams.get('token') || req.headers['x-gateway-token'] || bearer || '').trim();
       const expected = String(config.token || '').trim();
       if (expected && given !== expected) {
         sendJson(res, 401, { ok: false, message: '令牌不对：请用 /login?token=<网关令牌> 打开' });
@@ -383,6 +385,14 @@ export function createApp({
           const key = String(url.searchParams.get('key') || '').trim();
           if (!key) { sendJson(res, 400, { ok: false, message: '缺少 key' }); return; }
           sendJson(res, 200, await pollNeteaseLogin(key));
+          return;
+        }
+        if (pathname === '/login/logout' && req.method === 'POST') {
+          if (typeof source.setCookie === 'function') source.setCookie('');
+          if (typeof persistCookie === 'function') persistCookie('');
+          loginSessions.clear();
+          console.log('[login] 已清除网易云登录态');
+          sendJson(res, 200, { ok: true });
           return;
         }
       } catch (error) {

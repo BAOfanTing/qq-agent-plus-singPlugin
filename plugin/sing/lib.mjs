@@ -6,6 +6,8 @@ export const DEFAULTS = Object.freeze({
   defaultVoice: '',
   maxSeconds: 60,
   allowInsecureHttp: false,
+  // 默认只用语音条：群文件是可选能力，关着时绝不走 cap.send.file
+  allowFileOutput: false,
   pollIntervalMs: 2000
 });
 
@@ -77,6 +79,7 @@ export function normalizeSettings(raw) {
     defaultVoice: String(input.defaultVoice ?? DEFAULTS.defaultVoice).trim(),
     maxSeconds: clampInt(input.maxSeconds, 5, 180, DEFAULTS.maxSeconds),
     allowInsecureHttp: input.allowInsecureHttp === true,
+    allowFileOutput: input.allowFileOutput === true,
     pollIntervalMs: clampInt(input.pollIntervalMs, 1000, 10000, DEFAULTS.pollIntervalMs)
   };
 }
