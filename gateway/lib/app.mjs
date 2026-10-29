@@ -462,9 +462,14 @@ export function createApp({
         const name = path.basename(finished.audioUrl);
         const file = path.join(filesDir, name);
         const buffer = fs.readFileSync(file);
+        // 真实时长放在响应头里：宿主默认是"按字数估"（唱：夜曲 = 4 字 → 1 秒），
+        // 会把 90 秒的语音说成 1 秒。宿主愿意读这个头就能显示对（见 docs/PATCHES.md）。
+        const finishedJob = queue.get(job.jobId);
+        const audioSeconds = Math.max(0, Math.round(Number(finishedJob?.seconds) || 0));
         res.writeHead(200, {
           'content-type': CONTENT_TYPES[path.extname(name).toLowerCase()] || 'audio/mpeg',
-          'content-length': buffer.length
+          'content-length': buffer.length,
+          'x-audio-seconds': String(audioSeconds)
         });
         res.end(buffer);
         return;
