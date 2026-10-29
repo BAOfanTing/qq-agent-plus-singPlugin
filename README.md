@@ -1,4 +1,10 @@
-# qq-agent-plus-SingPlugin
+<p align="center">
+  <img src="assets/icon.png" width="120" height="120" alt="qq-agent-plus-SingPlugin">
+</p>
+
+<h1 align="center">qq-agent-plus-SingPlugin</h1>
+
+<p align="center"><em>点歌 · 换声 · 发语音条 —— 给 qq-agent-plus 的唱歌插件</em></p>
 
 给 [qq-agent-plus](https://github.com/sakurawwwxh/qq-agent-plus) 的**点歌唱歌**插件：
 群里说「用语音唱一首 X」，机器人用你自己训练的音色翻唱，直接发 QQ 语音条。
