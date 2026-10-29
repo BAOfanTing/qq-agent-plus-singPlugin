@@ -180,7 +180,9 @@ export function createApp({
     }
 
     const outPath = path.join(filesDir, `out-${job.jobId}.${usedTarget}`);
-    const seconds = Math.min(maxSeconds, Math.round(await probeSeconds(outPath)) || 0);
+    const probedSec = Math.round(await probeSeconds(outPath)) || 0;
+    // 探不到时长时用请求时长兜底：报 0 会让宿主退回"按字数估"，又说成 1 秒
+    const seconds = probedSec > 0 ? Math.min(maxSeconds, probedSec) : maxSeconds;
     const bytes = fs.statSync(outPath).size;
 
     // 中间文件用完就删；成品留在 files/ 给插件下载（TTL 清理见 pruneFiles）
@@ -462,9 +464,41 @@ export function createApp({
           sendJson(res, 500, { ok: false, message: finished.error || '唱失败了' });
           return;
         }
-        const name = path.basename(finished.audioUrl);
-        const file = path.join(filesDir, name);
-        const buffer = fs.readFileSync(file);
+        let name = path.basename(finished.audioUrl);
+        let file = path.join(filesDir, name);
+        let buffer = fs.readFileSync(file);
+        // 语音条通道有两条硬约束：宿主只收 ≤4MB，而且它按 response_format 当压缩音频用。
+        // 所以这里不直接把成品甩出去 —— 不是 mp3 或超过 3.5MB，就现转一份（96k，仍大就 64k）。
+        if (!/\.mp3$/i.test(name) || buffer.length > 3.5 * 1024 * 1024) {
+          const converted = path.join(tmpDir, `voice-send-${job.jobId}.mp3`);
+          // transcodeTo 在 ffmpeg 失败时是抛异常（不是返回 false），必须自己接住
+          const tryTranscode = async (opts) => {
+            try {
+              return await transcodeTo(file, converted, opts);
+            } catch (error) {
+              console.warn(`[voice] 转码失败：${String(error?.message ?? error).slice(0, 120)}`);
+              return false;
+            }
+          };
+          let ok = await tryTranscode({ ext: 'mp3' });
+          if (ok && fs.existsSync(converted) && fs.statSync(converted).size > 3.5 * 1024 * 1024) {
+            ok = await tryTranscode({ ext: 'mp3', bitrate: '64k' });
+          }
+          if (ok && fs.existsSync(converted)) {
+            name = path.basename(converted);
+            file = converted;
+            buffer = fs.readFileSync(file);
+            console.log(`[voice] 已转码为 mp3（${Math.round(buffer.length / 1024)} KB）供语音条发送`);
+          } else if (buffer.length > 3.5 * 1024 * 1024) {
+            // 真的超限又转不了：如实失败，不要把注定被宿主拒收的东西发出去
+            throw Object.assign(
+              new Error(`成品 ${Math.round(buffer.length / 1024 / 1024 * 10) / 10}MB 超过宿主 4MB 上限，且没有可用的 ffmpeg 转码`),
+              { code: 'E_TOO_LARGE' });
+          } else {
+            // 没超限：原样发送（格式不是 mp3 但宿主能收），不因为转码失败就整单失败
+            console.log(`[voice] 转码不可用，按原格式发送（${Math.round(buffer.length / 1024)} KB）`);
+          }
+        }
         // 真实时长放在响应头里：宿主默认是"按字数估"（唱：夜曲 = 4 字 → 1 秒），
         // 会把 90 秒的语音说成 1 秒。宿主愿意读这个头就能显示对（见 docs/PATCHES.md）。
         const finishedJob = queue.get(job.jobId);

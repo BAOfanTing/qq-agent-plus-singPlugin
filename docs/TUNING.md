@@ -95,6 +95,8 @@ import 它并调用 `torch.cuda.set_per_process_memory_fraction(0.85, 0)` ——
 | `fetch failed`（约 50% 概率） | 服务器只有 IPv6 无出口 + Node Happy Eyeballs 默认 250ms 尝试超时 | 宿主 `NODE_OPTIONS=--dns-result-order=ipv4first --network-family-autoselection-attempt-timeout=5000`（实测 12/12 通过） |
 | Cloudflare 隧道隔几小时就 530 | 快速隧道是匿名隧道，Cloudflare 明说无可用性保证；建隧接口也会超时 | 备用专线：`ssh -R` + nginx TLS（8898），地址永不变；语音条通道直接走 `https://127.0.0.1:8898/v1` |
 | 服务器访问自己的公网 IP:8898 超时 | 华为云安全组/NAT 不回环，`curl https://<公网IP>:8898` 从服务器自己发出会 000 | 宿主侧改用 `https://127.0.0.1:8898/v1`；插件侧禁用内网地址，只能走公网隧道 |
+| 宿主报「语音合成结果过大（>4MB）」 | 手动起网关时 PATH 里没有 ffmpeg，转码静默跳过，把 6.87MB 的 WAV 直接发出去（`transcode: auto` 的降级分支） | `audio.mjs` 改为自己找 ffmpeg（环境变量 → 仓库自带 `sing-model/bin` → PATH）；`/v1/audio/speech` 出口再兜一道：不是 mp3 或 >3.5MB 就现转（96k，仍大用 64k） |
+| 时长报 0 / 又变成「才一秒」 | ffprobe 不在 PATH，`probeSeconds` 返回 0，`min(maxSeconds, 0)` 把时长清零 | 探不到时用请求时长兜底，不再报 0 |
 | `upload_group_file ENOENT` | OneBot 跑在容器里，看不到宿主的插件媒体目录 | `scripts/bridge-container-paths.sh`（宿主建软链 + 容器内 `ln -sfn /app/data /opt/qq-agent/data`） |
 | `unable to get local issuer certificate` | CA 被重建过，但服务器证书还是旧 CA 签的 | 重新签：`bash reissue-server-cert.sh <IP>`；宿主 `NODE_EXTRA_CA_CERTS=/opt/qq-agent/tls/ca.crt` |
 
