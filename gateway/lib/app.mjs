@@ -344,6 +344,9 @@ export function createApp({
         source: source.type,
         neteaseCookie: typeof source.hasCookie === 'function' ? source.hasCookie() : Boolean(config.source.neteaseCookie),
         voiceSeconds: runtimeVoiceSeconds || config.voiceMessageDefaultSeconds || 90,
+        // 三个上限都报出来：设置被夹回去时能一眼看出是哪一道闸
+        voiceMaxSeconds: Math.max(5, Number(config.voiceMessageMaxSeconds) || 300),
+        jobMaxSeconds: Number(config.maxSeconds) || 300,
         transcode: config.transcode,
         jobs: queue.size(),
         now: now()

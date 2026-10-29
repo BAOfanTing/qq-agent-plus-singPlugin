@@ -476,11 +476,19 @@ nginx -t && systemctl reload nginx
 
 三道闸，改哪一道都行：
 
+**一共有四道闸，任何一道小都会把时长夹回去**（`/health` 会把后三个都报出来，方便对照）：
+
 | 闸 | 默认 | 在哪改 |
 |---|---|---|
-| 插件设置「语音条唱多久」 | **180 秒** | 控制台 → 插件 → 点歌唱歌（插件会把值推给网关，立即生效） |
-| 网关 `voiceMessageMaxSeconds` | 300 秒 | `gateway/config.json`（硬上限，插件推的值会被它夹紧） |
-| 宿主 TTS 超时 `tts.timeoutMs` | 600000（10 分钟） | 控制台 → 设置 → 语音回复，或 `POST /api/config` |
+| ① 插件设置「语音条唱多久」 | 90 秒 | 控制台 → 插件 → 点歌唱歌（插件把值推给网关，立即生效） |
+| ② 网关 `voiceMessageMaxSeconds` | 300 秒 | `gateway/config.json`（语音条通道硬上限） |
+| ③ 网关 `maxSeconds`（job 级） | 300 秒 | `gateway/config.json`（**单次任务**上限，群文件通道也受它管） |
+| ④ 宿主 TTS 超时 `tts.timeoutMs` | 600000（10 分钟） | 控制台 → 设置 → 语音回复，或 `POST /api/config` |
+
+> 踩过的坑：插件里填了 240 却只唱 180 —— 因为 ③ 当时是 180，它才是最后拍板的那个。
+> 排查时先看 `/health`：`voiceSeconds` 是当前生效值，`voiceMaxSeconds` / `jobMaxSeconds` 是 ②③。
+
+耗时参考（RTX 3080 10G）：90 秒成品约 25-30 秒；240 秒成品约 4-5 分钟（分离和换声都按整段算）。
 
 另外两条物理限制：宿主对 `/audio/speech` 的响应上限 **4MB**（96kbps 单声道 ≈ 5.7 分钟），以及 QQ 语音条自身的时长上限（各协议端不同，被拒时机器人会回退成文字）。
 要走长音频（几分钟）用群文件通道：把「允许发群文件」打开，插件工具的超时是 180 秒，`maxSeconds` 上限 180。
