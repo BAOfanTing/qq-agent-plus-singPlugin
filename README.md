@@ -14,6 +14,10 @@ QQ 群里：「用语音唱一首起风了」
   └──────────────────────────────┘         └────────────────────────────────┘
 ```
 
+> ⚠️ **前提**：换声模型（RVC）与网关都跑在**你自己的电脑**上（就是本仓库的 `gateway/` 与 `sing-model/`）。服务器只做转发、不装模型；你电脑没开时机器人只会回「后端离线」。
+
+> ⚠️ **前提**：换声模型（RVC）与网关都跑在**你自己的电脑**上（本仓库的 `gateway/` 与 `sing-model/`）。服务器只做转发、不装模型；你电脑没开时机器人只会回「后端离线」。
+
 一句话分工：**服务器只管转发，重活全在你自己的电脑上。**
 
 - 插件可独立装卸，**不改 qq-agent 一行核心代码**；
@@ -46,7 +50,7 @@ start-tunnel.bat
 
 | 通道 | 触发方式 | 产出 | 上限 |
 |---|---|---|---|
-| **语音条**（推荐） | 「用语音唱一首 XXX」 | QQ 语音气泡，点开就播 | 受 QQ 语音条时长限制，见 config `voiceMessageMaxSeconds`（默认 120 秒） |
+| **语音条**（推荐） | 「用语音唱一首 XXX」 | QQ 语音气泡，点开就播 | 时长在插件设置里改（默认 **180 秒**，上限 300 秒） |
 | **群文件** | 「点歌唱一首 XXX」 | mp3 文件，可下载收藏 | 150 秒 |
 
 两条通道都走同一个网关、同一套换声；区别只在「谁来发」：
@@ -56,7 +60,7 @@ start-tunnel.bat
 
 > 插件没有发语音条的能力（宿主只给插件 `send.text` / `send.file`），所以语音条只能借宿主自己的 TTS 通道 —— 详见[第 3.3 节](#33-语音条通道把宿主-tts-指向网关)。
 
-## 二、实测数据（RTX 3080 10G / Windows）
+## 二、实测数据（v1.0.0 / RTX 3080 10G / Windows）
 
 | 环节 | 耗时 |
 |---|---|
@@ -203,8 +207,8 @@ cp config.example.json config.json
 | `outputArtist` | 群里显示的「演唱者」名字，默认 **小鲸鱼**（原唱信息只留在"原唱受限"说明里） |
 | `transcode` | `auto`（有 ffmpeg 就转 mp3 并裁剪）/ `never` |
 | `maxSeconds` | 群文件通道最长时间（默认 150 秒） |
-| `voiceMessageMaxSeconds` | 语音条通道最长时间上限（默认 120 秒，按实测调） |
-| `voiceMessageDefaultSeconds` | 语音条默认唱多久（默认 90 秒，受上面那个夹紧）。宿主调 `/audio/speech` 时不带时长，就用它 |
+| `voiceMessageMaxSeconds` | 语音条通道硬上限，默认 300 秒（插件推上来的值会被它夹紧） |
+| `voiceMessageDefaultSeconds` | 语音条默认时长，默认 180 秒（插件没推值时用它；宿主调 `/audio/speech` 不带时长） |
 | `filesTtlHours` | 成品保留小时数（默认 24，另有每天 0 点清理） |
 
 本机这套的实际配置（供对照）：
@@ -218,7 +222,7 @@ cp config.example.json config.json
     "command": "\"<conda路径>/envs/rvc/python.exe\" \"<仓库路径>/sing-model/run.py\" --input {input} --output {output} --voice {voice} --pitch {pitch} --max-seconds {maxSeconds}",
     "timeoutMs": 900000, "pitch": 0, "outputExt": "wav", "defaultVoice": "hanser"
   },
-  "transcode": "auto", "maxSeconds": 150, "voiceMessageMaxSeconds": 120,
+  "transcode": "auto", "maxSeconds": 300, "voiceMessageMaxSeconds": 300, "voiceMessageDefaultSeconds": 180,
   "filesTtlHours": 24, "outputArtist": "小鲸鱼", "dataDir": "gateway-run"
 }
 ```
@@ -361,10 +365,21 @@ sudo bash scripts/bridge-container-paths.sh
 | 更新网关 | 改 `gateway/` 代码后重启 `node gateway/server.mjs` |
 | 暂停/卸载 | 控制台停用插件即可；彻底卸载删掉 `data/plugins/sing`，宿主立即恢复原状（宿主源码一行未被改动） |
 
+### 显存占用
+
+换声是全 GPU 的活：BS-Roformer 分离 + RVC 推理，3080 10G 上实测峰值约 9.4G。为了不把显卡占满，`sing-model/run.py` 默认给子进程加了一道显存闸：
+
+```bash
+# 默认 85%，也就是最多用 8.7G；改法：在 voice.command 里加参数
+python run.py --gpu-fraction 0.75 ...
+```
+
+实现是 `sing-model/gpu_cap/sitecustomize.py`（Python 启动时自动套用 `torch.cuda.set_per_process_memory_fraction`），不改 RVC 一行代码；同时设了 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 减少碎片。调太低会 OOM（任务会如实报错，不会假装成功）。
+
 ## 七、已知限制（诚实版）
 
 1. **语音条时长尚未定论**：60 秒是「手机 QQ 录音」的限制，服务端对 record 段的策略随协议端不同。
-   现在上限可配（`voiceMessageMaxSeconds`），请以你自己实测为准，被拒就调小。
+   现在上限可配：插件设置「语音条唱多久」默认 180 秒、网关硬上限 300 秒，被 QQ 拒就调小。
 2. **普通说话会失败**：网关只做唱歌，不做 TTS。宿主发语音失败会自动退回文字，不会丢消息。
 3. **一次只跑一个任务**：换声吃显存，网关串行排队（故意的）。
 4. **首次点歌慢**：每次都要重新加载模型（10 秒上下）。
@@ -457,7 +472,20 @@ nginx -t && systemctl reload nginx
 > 宿主的 `NODE_EXTRA_CA_CERTS=/opt/qq-agent/tls/ca.crt` 一直留着没坏处（只影响自签那几条链路）。
 > 证书链坏了（CA 重建过）就跑 `bash reissue-server-cert.sh`。
 
-### 关于「只能唱 30 秒」
+### 关于「能唱多长」
+
+三道闸，改哪一道都行：
+
+| 闸 | 默认 | 在哪改 |
+|---|---|---|
+| 插件设置「语音条唱多久」 | **180 秒** | 控制台 → 插件 → 点歌唱歌（插件会把值推给网关，立即生效） |
+| 网关 `voiceMessageMaxSeconds` | 300 秒 | `gateway/config.json`（硬上限，插件推的值会被它夹紧） |
+| 宿主 TTS 超时 `tts.timeoutMs` | 600000（10 分钟） | 控制台 → 设置 → 语音回复，或 `POST /api/config` |
+
+另外两条物理限制：宿主对 `/audio/speech` 的响应上限 **4MB**（96kbps 单声道 ≈ 5.7 分钟），以及 QQ 语音条自身的时长上限（各协议端不同，被拒时机器人会回退成文字）。
+要走长音频（几分钟）用群文件通道：把「允许发群文件」打开，插件工具的超时是 180 秒，`maxSeconds` 上限 180。
+
+### 关于「只能唱 30 秒」（旧问题，已修）（旧问题，已修）
 
 30 秒几乎都是 **iTunes 试听段** 的长度（Apple 只提供 30 秒 preview）。出现顺序是：
 
@@ -467,7 +495,7 @@ nginx -t && systemctl reload nginx
            → 新行为：先试其它网易云候选（常常有完整翻唱版/现场版），实在都没有才用试听段 ✅
 ```
 
-另外歌词/音频完整度还取决于音源本身：`voiceMessageDefaultSeconds`（默认 90）只决定"要唱多久"，
+另外歌词/音频完整度还取决于音源本身：`voiceMessageDefaultSeconds`（默认 180）只决定"要唱多久"，
 源只有 30 秒就只能出 30 秒。想要原唱完整版，在 `gateway/config.json` 填 `source.neteaseCookie`（VIP）。
 
 ---

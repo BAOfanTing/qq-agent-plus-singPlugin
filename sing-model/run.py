@@ -26,6 +26,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 RVC_DIR = HERE / "rvc"
+# 显存上限用的 sitecustomize（见 gpu_cap/sitecustomize.py）
+GPU_CAP_DIR = HERE / "gpu_cap"
+DEFAULT_GPU_FRACTION = 0.85
 ASSETS = RVC_DIR / "assets"
 WEIGHTS = ASSETS / "weights"
 INDICES = ASSETS / "indices"
@@ -122,9 +125,14 @@ def ffmpeg_bin_dir() -> str | None:
     return str(shim)
 
 
-def run(cmd: list[str], what: str, timeout: int = 1800) -> None:
+def run(cmd: list[str], what: str, timeout: int = 1800, gpu_fraction: float | None = None) -> None:
     log(f"{what}：{' '.join(str(c) for c in cmd[:6])} ...")
     env = os.environ.copy()
+    # 显存闸：把 gpu_cap 目录塞进 PYTHONPATH，子进程启动时会自动套用上限
+    if gpu_fraction is not None and GPU_CAP_DIR.exists():
+        env["SING_GPU_MEM_FRACTION"] = str(gpu_fraction)
+        env["PYTHONPATH"] = os.pathsep.join([str(GPU_CAP_DIR), env.get("PYTHONPATH", "")]).strip(os.pathsep)
+        env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     extra = [p for p in (ffmpeg_bin_dir(), str(Path(sys.executable).parent / "Scripts")) if p]
     env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
     proc = subprocess.run(cmd, cwd=str(RVC_DIR), timeout=timeout, capture_output=True, text=True, env=env)

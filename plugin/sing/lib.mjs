@@ -5,6 +5,8 @@ export const DEFAULTS = Object.freeze({
   gatewayUrl: '',
   defaultVoice: '',
   maxSeconds: 60,
+  // 语音条（宿主 send_voice 通道）唱多久：插件会把改这个值推给网关
+  voiceSeconds: 180,
   allowInsecureHttp: false,
   // 默认只用语音条：群文件是可选能力，关着时绝不走 cap.send.file
   allowFileOutput: false,
@@ -78,6 +80,7 @@ export function normalizeSettings(raw) {
     gatewayUrl: String(input.gatewayUrl ?? DEFAULTS.gatewayUrl).trim(),
     defaultVoice: String(input.defaultVoice ?? DEFAULTS.defaultVoice).trim(),
     maxSeconds: clampInt(input.maxSeconds, 5, 180, DEFAULTS.maxSeconds),
+    voiceSeconds: clampInt(input.voiceSeconds, 5, 300, DEFAULTS.voiceSeconds),
     allowInsecureHttp: input.allowInsecureHttp === true,
     allowFileOutput: input.allowFileOutput === true,
     pollIntervalMs: clampInt(input.pollIntervalMs, 1000, 10000, DEFAULTS.pollIntervalMs)

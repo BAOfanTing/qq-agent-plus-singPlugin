@@ -172,6 +172,21 @@ async function waitForJob(conf, jobId, { onTick } = {}) {
   );
 }
 
+// 插件不参与「语音条」那条链路（宿主直接打网关），所以设置里的秒数要主动推给网关。
+// 只在值变化时推一次；失败不影响主流程。
+let lastSyncedVoiceSeconds = 0;
+async function syncVoiceSeconds(conf) {
+  const seconds = Number(conf.voiceSeconds) || 0;
+  if (!seconds || seconds === lastSyncedVoiceSeconds) return;
+  try {
+    const r = await callGateway(conf, '/admin/voice-seconds', { method: 'POST', body: { seconds } });
+    lastSyncedVoiceSeconds = Number(r?.seconds) || seconds;
+    await log(`语音条时长已同步给网关：${lastSyncedVoiceSeconds} 秒`);
+  } catch (error) {
+    await log(`语音条时长同步失败（不影响点歌）：${describeError(error)}`, 'warn');
+  }
+}
+
 const tools = {
 
   /**
@@ -184,6 +199,7 @@ const tools = {
     const conf = await loadConfig();
 
     if (action === 'start') {
+      await syncVoiceSeconds(conf);
       const started = await callGateway(conf, '/login/start', { method: 'POST', body: {} });
       const key = String(started.key || '');
       const loginUrl = String(started.loginUrl || '');
@@ -263,9 +279,10 @@ const tools = {
     };
   },
 
-  /** 只读：查后端在不在、能不能唱、有哪些音色。 */
+/** 只读：查后端在不在、能不能唱、有哪些音色。 */
   sing_status: async () => {
     const conf = await loadConfig();
+    await syncVoiceSeconds(conf);
     const health = await callGateway(conf, '/health');
     const engine = String(health.engine ?? '');
     // 只有网关明确说"接了换声模型"才算能唱；engine=none 只是搬运音源，不能对用户说成翻唱
@@ -321,6 +338,7 @@ const tools = {
           + '要发语音条请改调 send_voice，并把输入写成「唱：歌名」；确实需要文件请去设置里打开这个开关。'
       };
     }
+    await syncVoiceSeconds(conf);
     const song = normalizeSongName(args?.song ?? args?.keyword);
     const voice = normalizeVoice(args?.voice) || conf.defaultVoice;
     const maxSeconds = Math.min(180, Math.max(5, Number(args?.maxSeconds) || conf.maxSeconds));

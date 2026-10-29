@@ -8,7 +8,7 @@ import { createSource } from './sources.mjs';
 import { createVoiceEngine } from './voice.mjs';
 import { transcodeTo, probeSeconds } from './audio.mjs';
 
-export const VERSION = '0.1.0';
+export const VERSION = '1.0.0';
 const WEB_DIR = path.join(import.meta.dirname, '..', 'web');
 const NETEASE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const MAX_BODY_BYTES = 8 * 1024;
@@ -200,6 +200,10 @@ export function createApp({
     };
   }
 
+  // 插件设置里改的「语音条秒数」会通过 /admin/voice-seconds 推上来（插件不参与语音条那条链路，
+  // 只能这样把值交给网关）。为空时用 config.voiceMessageDefaultSeconds。
+  let runtimeVoiceSeconds = 0;
+
   const queue = createJobQueue({ runner: runSingJob, ttlMs: config.filesTtlHours * 3600 * 1000, now });
 
   const tokenOk = (req) => {
@@ -339,6 +343,7 @@ export function createApp({
         voices: voiceConfigured ? voice.voices : [],
         source: source.type,
         neteaseCookie: typeof source.hasCookie === 'function' ? source.hasCookie() : Boolean(config.source.neteaseCookie),
+        voiceSeconds: runtimeVoiceSeconds || config.voiceMessageDefaultSeconds || 90,
         transcode: config.transcode,
         jobs: queue.size(),
         now: now()
@@ -440,14 +445,16 @@ export function createApp({
         // 用 config.voiceMessageMaxSeconds 自己试（默认 120）。被拒就调小。
         const cap = Math.max(5, Number(config.voiceMessageMaxSeconds) || 120);
         // 默认只唱 45 秒：语音条那条路要宿主同步等音频，越短越不容易撞超时
-        const maxSeconds = Math.min(cap, Math.max(5, Number(body.maxSeconds) || Math.min(config.maxSeconds, config.voiceMessageDefaultSeconds || 90)));
+        const wanted = Number(body.maxSeconds) || runtimeVoiceSeconds || config.voiceMessageDefaultSeconds || 90;
+        const maxSeconds = Math.min(cap, Math.max(5, wanted));
         const job = queue.create({
           song,
           voice: String(body.voice ?? '').trim(),
           maxSeconds,
           itemId: ''
         });
-        const finished = await waitForJob(job.jobId, Math.min(config.maxSeconds, maxSeconds) + 150000);
+        // 截止时间 = 演唱时长（秒→毫秒）+ 5 分钟余量（分离/加载/转码都算进去）
+        const finished = await waitForJob(job.jobId, Math.min(config.maxSeconds, maxSeconds) * 1000 + 300000);
         if (finished.state !== 'done') {
           sendJson(res, 500, { ok: false, message: finished.error || '唱失败了' });
           return;
@@ -468,6 +475,17 @@ export function createApp({
         const result = pruneBeforeToday();
         console.log(`[prune] 清理 ${result.removed} 个昨日成品（${Math.round(result.bytes / 1024)} KB）`);
         sendJson(res, 200, { ok: true, ...result });
+        return;
+      }
+
+      // 插件把设置里的「语音条秒数」推上来（幂等，随便多调几次没关系）
+      if (pathname === '/admin/voice-seconds' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const cap = Math.max(5, Number(config.voiceMessageMaxSeconds) || 300);
+        const seconds = Math.min(cap, Math.max(5, Math.floor(Number(body.seconds) || 0)));
+        runtimeVoiceSeconds = seconds;
+        console.log(`[admin] 语音条默认时长设为 ${seconds} 秒`);
+        sendJson(res, 200, { ok: true, seconds, cap });
         return;
       }
 
