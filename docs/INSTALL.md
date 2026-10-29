@@ -2,6 +2,69 @@
 
 完整安装步骤。只想先跑起来，看 [README](../README.md) 的「快速开始」即可。
 
+## 关掉之后怎么重新起（手动启动速查）
+
+四个部分，按顺序起。**任何一步没起，群里点歌都会失败**（会明确报"后端离线"或"网关连不上"）。
+
+### ① 电脑端：起网关
+
+```powershell
+cd E:\Cache\qq-agent\qq-agent-plus-SingPlugin
+node gateway\server.mjs                       # 前台，能看每条 [req] 日志（推荐排错时用）
+# 或双击 start-gateway.bat
+# 或常驻：powershell -ExecutionPolicy Bypass -File scripts\run-gateway-forever.ps1
+```
+
+自检：
+
+```powershell
+curl http://127.0.0.1:8899/health
+# 期望 ok:true、voiceConfigured:true、voices:[...]、voiceSeconds 符合预期
+```
+
+### ② 电脑端：把网关暴露成 https（二选一）
+
+```powershell
+# A. Cloudflare 快速隧道（域名每次变）
+$env:CLOUDFLARED = "E:\Cache\qq-agent\tools\cloudflared.exe"
+start-tunnel.bat
+# 输出里找 https://xxx-xxx-xxx.trycloudflare.com
+```
+
+```powershell
+# B. 专线（地址永不变，需要服务器上 nginx 8898 站点已启用）
+ssh -i "$env:USERPROFILE\.ssh\dsh_ed25519_stats" -N -o ExitOnForwardFailure=yes `
+    -o ServerAliveInterval=30 -R 127.0.0.1:8899:127.0.0.1:8899 root@<服务器IP>
+# 常驻版：powershell -ExecutionPolicy Bypass -File scripts\run-tunnel-local.ps1 -Host root@<服务器IP>
+```
+
+> 专线要在服务器上先启用站点：
+> `mv /etc/nginx/conf.d/sing-gateway.conf.disabled /etc/nginx/conf.d/sing-gateway.conf && nginx -t && systemctl reload nginx`
+
+### ③ 服务器端：把地址填给插件和宿主
+
+```bash
+bash /opt/qq-agent/set-gateway-url.sh https://<第 2 步的地址> <网关令牌>
+bash /opt/qq-agent/set-tts-url.sh     https://<第 2 步的地址>/v1
+```
+
+脚本会自己回读并打 `/health` 自检。**注意两条通道能用的地址不一样**：
+
+| 谁 | 用什么地址 | 原因 |
+|---|---|---|
+| 插件（发群文件） | 必须是**公网**（Cloudflare 隧道） | 宿主 `cap.http` 禁用内网地址 |
+| 宿主语音条 | `https://127.0.0.1:8898/v1`（专线）也可以用 | 服务器访问自己的公网 IP:8898 常被安全组挡 |
+
+### ④ 验证
+
+```bash
+bash /opt/qq-agent/check-lines.sh      # 隧道口 / 8898 / 宿主 TTS 真链路
+```
+
+再在控制台 → 设置 → 语音回复 → 「试听」输入 `唱：歌名`，能听到声音就全通了。
+
+---
+
 | 章节 | 内容 |
 |---|---|
 | 0 | 目录结构 |

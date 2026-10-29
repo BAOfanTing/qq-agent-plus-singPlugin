@@ -80,7 +80,8 @@ export function normalizeSettings(raw) {
     gatewayUrl: String(input.gatewayUrl ?? DEFAULTS.gatewayUrl).trim(),
     defaultVoice: String(input.defaultVoice ?? DEFAULTS.defaultVoice).trim(),
     maxSeconds: clampInt(input.maxSeconds, 5, 180, DEFAULTS.maxSeconds),
-    voiceSeconds: clampInt(input.voiceSeconds, 5, 300, DEFAULTS.voiceSeconds),
+    // 0 = 唱完整首；其余 5..360 秒
+    voiceSeconds: Number(input.voiceSeconds) === 0 ? 0 : clampInt(input.voiceSeconds, 5, 360, DEFAULTS.voiceSeconds),
     allowInsecureHttp: input.allowInsecureHttp === true,
     allowFileOutput: input.allowFileOutput === true,
     pollIntervalMs: clampInt(input.pollIntervalMs, 1000, 10000, DEFAULTS.pollIntervalMs)

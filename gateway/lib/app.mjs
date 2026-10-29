@@ -109,7 +109,11 @@ export function createApp({
   async function runSingJob(job, { progress }) {
     const payload = job.payload || {};
     const song = String(payload.song ?? '').trim();
-    const maxSeconds = Math.min(config.maxSeconds, Math.max(5, Number(payload.maxSeconds) || config.maxSeconds));
+    // payload.maxSeconds === 0 表示「唱完整首」：不裁剪，只受 config.maxSeconds 兜底保护。
+    const requested = Number(payload.maxSeconds);
+    const maxSeconds = requested === 0
+      ? Number(config.maxSeconds) || 0
+      : Math.min(config.maxSeconds, Math.max(5, requested || config.maxSeconds));
     const wantedVoice = String(payload.voice ?? '').trim() || config.voice.defaultVoice;
 
     progress(0.05, '搜歌');
@@ -203,8 +207,20 @@ export function createApp({
   }
 
   // 插件设置里改的「语音条秒数」会通过 /admin/voice-seconds 推上来（插件不参与语音条那条链路，
-  // 只能这样把值交给网关）。为空时用 config.voiceMessageDefaultSeconds。
-  let runtimeVoiceSeconds = 0;
+  // 只能这样把值交给网关）。它落在 state 文件里，网关重启后依然生效 ——
+  // 否则重启一次就退回 config 默认值，表现是"插件设了 240 却只唱 90"。
+  const runtimeStateFile = path.join(config.dataDir ? path.resolve(config.dataDir) : filesDir, 'runtime.json');
+  let runtimeVoiceSeconds = null;   // null = 没设过（用 config 默认）；0 = 整首
+  try {
+    if (fs.existsSync(runtimeStateFile)) {
+      const saved = JSON.parse(fs.readFileSync(runtimeStateFile, 'utf8'));
+      const savedSeconds = Number(saved?.voiceSeconds);
+      if (Number.isFinite(savedSeconds) && savedSeconds >= 0) {
+        runtimeVoiceSeconds = savedSeconds;
+        console.log(`  语音条时长（来自上次设置）：${savedSeconds === 0 ? '整首' : `${savedSeconds} 秒`}`);
+      }
+    }
+  } catch { /* 状态文件坏了就当没有 */ }
 
   const queue = createJobQueue({ runner: runSingJob, ttlMs: config.filesTtlHours * 3600 * 1000, now });
 
@@ -345,7 +361,8 @@ export function createApp({
         voices: voiceConfigured ? voice.voices : [],
         source: source.type,
         neteaseCookie: typeof source.hasCookie === 'function' ? source.hasCookie() : Boolean(config.source.neteaseCookie),
-        voiceSeconds: runtimeVoiceSeconds || config.voiceMessageDefaultSeconds || 90,
+        voiceSeconds: runtimeVoiceSeconds ?? (config.voiceMessageDefaultSeconds ?? 90),
+        voiceFullSong: runtimeVoiceSeconds === 0,
         // 三个上限都报出来：设置被夹回去时能一眼看出是哪一道闸
         voiceMaxSeconds: Math.max(5, Number(config.voiceMessageMaxSeconds) || 300),
         jobMaxSeconds: Number(config.maxSeconds) || 300,
@@ -448,10 +465,11 @@ export function createApp({
         }
         // 语音条能有多长，取决于协议端与服务端策略，不是固定 60 秒：
         // 用 config.voiceMessageMaxSeconds 自己试（默认 120）。被拒就调小。
-        const cap = Math.max(5, Number(config.voiceMessageMaxSeconds) || 120);
-        // 默认只唱 45 秒：语音条那条路要宿主同步等音频，越短越不容易撞超时
-        const wanted = Number(body.maxSeconds) || runtimeVoiceSeconds || config.voiceMessageDefaultSeconds || 90;
-        const maxSeconds = Math.min(cap, Math.max(5, wanted));
+        const cap = Math.max(5, Number(config.voiceMessageMaxSeconds) || 300);
+        // 0 有特殊含义：唱完整首（不裁剪）。其余按秒数夹紧。
+        const asked = body.maxSeconds === undefined ? null : Number(body.maxSeconds);
+        const wanted = asked ?? (runtimeVoiceSeconds ?? config.voiceMessageDefaultSeconds ?? 90);
+        const maxSeconds = wanted === 0 ? 0 : Math.min(cap, Math.max(5, wanted));
         const job = queue.create({
           song,
           voice: String(body.voice ?? '').trim(),
@@ -459,7 +477,12 @@ export function createApp({
           itemId: ''
         });
         // 截止时间 = 演唱时长（秒→毫秒）+ 5 分钟余量（分离/加载/转码都算进去）
-        const finished = await waitForJob(job.jobId, Math.min(config.maxSeconds, maxSeconds) * 1000 + 300000);
+        // maxSeconds === 0 表示整首：这时预算要用 config.maxSeconds，否则 Math.min(…,0) 会把
+        // 等待时间压成 0 + 5 分钟，4 分钟的歌必然超时（2026-10-29 实测 301 秒被掐）。
+        const budgetSeconds = maxSeconds > 0
+          ? Math.min(config.maxSeconds, maxSeconds)
+          : Math.max(60, Number(config.maxSeconds) || 300);
+        const finished = await waitForJob(job.jobId, budgetSeconds * 1000 + 300000);
         if (finished.state !== 'done') {
           sendJson(res, 500, { ok: false, message: finished.error || '唱失败了' });
           return;
@@ -524,9 +547,17 @@ export function createApp({
       if (pathname === '/admin/voice-seconds' && req.method === 'POST') {
         const body = await readJsonBody(req);
         const cap = Math.max(5, Number(config.voiceMessageMaxSeconds) || 300);
-        const seconds = Math.min(cap, Math.max(5, Math.floor(Number(body.seconds) || 0)));
+        const raw = Math.floor(Number(body.seconds) || 0);
+        // 0 = 整首；其余夹在 5..cap
+        const seconds = raw === 0 ? 0 : Math.min(cap, Math.max(5, raw));
         runtimeVoiceSeconds = seconds;
-        console.log(`[admin] 语音条默认时长设为 ${seconds} 秒`);
+        try {
+          fs.mkdirSync(path.dirname(runtimeStateFile), { recursive: true });
+          fs.writeFileSync(runtimeStateFile, JSON.stringify({ voiceSeconds: seconds }, null, 2));
+        } catch (error) {
+          console.warn(`[admin] 保存语音条时长失败：${String(error?.message ?? error)}`);
+        }
+        console.log(`[admin] 语音条默认时长设为 ${seconds === 0 ? '整首（不裁剪）' : `${seconds} 秒`}`);
         sendJson(res, 200, { ok: true, seconds, cap });
         return;
       }
