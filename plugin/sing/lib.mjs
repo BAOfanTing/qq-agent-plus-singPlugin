@@ -6,7 +6,7 @@ export const DEFAULTS = Object.freeze({
   defaultVoice: '',
   maxSeconds: 60,
   // 语音条（宿主 send_voice 通道）唱多久：插件会把改这个值推给网关
-  voiceSeconds: 180,
+  voiceSeconds: 90,
   allowInsecureHttp: false,
   // 默认只用语音条：群文件是可选能力，关着时绝不走 cap.send.file
   allowFileOutput: false,

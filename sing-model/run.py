@@ -141,7 +141,7 @@ def run(cmd: list[str], what: str, timeout: int = 1800, gpu_fraction: float | No
         fail(f"{what} 失败（退出码 {proc.returncode}）：" + " | ".join(tail))
 
 
-def separate(src: Path, out_dir: Path, model_name: str | None) -> tuple[Path | None, Path | None]:
+def separate(src: Path, out_dir: Path, model_name: str | None, gpu_fraction: float | None = None) -> tuple[Path | None, Path | None]:
     """返回 (人声, 伴奏)。分离不可用时抛异常，由调用方决定降级。
 
     直接调 `python -m pymss.cli infer`（pymss 自己的 CLI），不经过 RVC 的
@@ -158,6 +158,7 @@ def separate(src: Path, out_dir: Path, model_name: str | None) -> tuple[Path | N
          "--device", "auto", "--format", "wav"],
         "人声分离",
         timeout=1800,
+        gpu_fraction=gpu_fraction,
     )
     picks: dict[str, Path] = {}
     for path in sep_dir.glob("*.wav"):
@@ -207,6 +208,8 @@ def main() -> int:
     ap.add_argument("--pitch", type=int, default=0, help="变调半音（男→女常 +12，女→男 -12）")
     ap.add_argument("--index-rate", type=float, default=0.75, help="index 相似度混合比例")
     ap.add_argument("--max-seconds", type=int, default=0, help="只唱前 N 秒（0=整段）")
+    ap.add_argument("--gpu-fraction", type=float, default=DEFAULT_GPU_FRACTION,
+                    help="显存上限占整卡的比例（默认 0.85，也就是最多用 85%%）；设 1 表示不限制")
     ap.add_argument("--no-separate", action="store_true", help="不做人声分离（输入已是干净人声时用）")
     ap.add_argument("--sep-model", default=None, help="指定分离模型标签，默认用 RVC 的第一个")
     ap.add_argument("--keep-instrumental", dest="keep_inst", action="store_true", default=True,
@@ -240,7 +243,7 @@ def main() -> int:
 
         if not args.no_separate:
             try:
-                vocal_src, inst_path = separate(src_maybe_trimmed, tmp_dir, args.sep_model)
+                vocal_src, inst_path = separate(src_maybe_trimmed, tmp_dir, args.sep_model, args.gpu_fraction)
                 log(f"分离完成：人声 {vocal_src.name}，伴奏 {'有' if inst_path else '无'}")
             except Exception as exc:  # 分离失败不该让整件事失败
                 log(f"分离没成功（{exc}），直接对原音频换声")
@@ -265,7 +268,7 @@ def main() -> int:
                "--overwrite"]
         if index is not None:
             cmd += ["--index", str(index)]
-        run(cmd, "RVC 换声")
+        run(cmd, "RVC 换声", gpu_fraction=args.gpu_fraction)
         if not converted.exists() or converted.stat().st_size == 0:
             fail("RVC 没有产出音频")
 

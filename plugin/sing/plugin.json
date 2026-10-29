@@ -169,7 +169,7 @@
             "key": "voiceSeconds",
             "label": "语音条唱多久（秒）",
             "type": "number",
-            "default": 180,
+            "default": 90,
             "min": 5,
             "max": 300,
             "help": "语音条通道（宿主 send_voice）的时长。改完插件会自动同步给网关，立即生效。受 QQ 语音条本身的上限和宿主 4MB 响应限制（约 5 分钟封顶）。"
