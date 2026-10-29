@@ -1,0 +1,14 @@
+[
+  {
+    "match": "/health",
+    "method": "GET",
+    "status": 200,
+    "body": "{\"ok\":true,\"version\":\"0.1.0\",\"engine\":\"command\",\"voices\":[\"me\"],\"source\":\"itunes\",\"transcode\":\"auto\",\"jobs\":0}"
+  },
+  {
+    "match": "/search",
+    "method": "GET",
+    "status": 200,
+    "body": "{\"ok\":true,\"items\":[{\"id\":\"1440833098\",\"title\":\"孤勇者\",\"artist\":\"陈奕迅\",\"durationSec\":256,\"source\":\"itunes\"},{\"id\":\"2\",\"title\":\"孤勇者（女声版）\",\"artist\":\"翻唱\",\"durationSec\":251,\"source\":\"itunes\"}]}"
+  }
+]

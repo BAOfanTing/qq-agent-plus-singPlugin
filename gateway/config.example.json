@@ -1,0 +1,25 @@
+{
+  "port": 8899,
+  "host": "127.0.0.1",
+  "token": "把这一行换成一串随机字符（例如 openssl rand -hex 24 的输出）",
+
+  "source": {
+    "type": "itunes",
+    "localDir": "",
+    "limit": 5
+  },
+
+  "voice": {
+    "engine": "none",
+    "command": "",
+    "timeoutMs": 600000,
+    "pitch": 0,
+    "outputExt": "wav",
+    "defaultVoice": "me"
+  },
+
+  "transcode": "auto",
+  "maxSeconds": 90,
+  "filesTtlHours": 24,
+  "dataDir": "gateway-run"
+}

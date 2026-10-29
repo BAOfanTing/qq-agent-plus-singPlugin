@@ -1,0 +1,5 @@
+# 统一换行：仓库里存 LF，Windows 检出也是 LF（Node/ffmpeg 的命令行模板别被 CRLF 咬到）
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf

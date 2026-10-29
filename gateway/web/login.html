@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>网易云扫码登录 · 点歌网关</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    background: radial-gradient(1200px 600px at 20% 0%, #1b2333 0%, #0d1117 55%, #090c11 100%);
+    color: #e6edf3; font: 15px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  .card {
+    width: min(430px, 92vw); padding: 28px 28px 22px; border-radius: 18px;
+    background: rgba(22, 27, 34, .86); border: 1px solid rgba(240, 246, 252, .1);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, .55); backdrop-filter: blur(6px);
+  }
+  h1 { margin: 0 0 4px; font-size: 19px; letter-spacing: .2px; }
+  .sub { margin: 0 0 20px; color: #8b949e; font-size: 13px; }
+  .qr-box {
+    position: relative; display: grid; place-items: center; height: 244px;
+    border-radius: 14px; background: #fff; padding: 12px;
+  }
+  .qr-box canvas, .qr-box img { width: 220px; height: 220px; image-rendering: pixelated; }
+  .mask {
+    position: absolute; inset: 0; display: none; place-items: center; text-align: center;
+    border-radius: 14px; background: rgba(13, 17, 23, .88); color: #e6edf3; font-size: 14px;
+    padding: 0 24px;
+  }
+  .mask.show { display: grid; }
+  .status { margin: 16px 0 0; min-height: 22px; text-align: center; font-size: 14px; color: #8b949e; }
+  .status.ok { color: #3fb950; }
+  .status.bad { color: #f85149; }
+  .foot { margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(240,246,252,.08);
+          color: #6e7681; font-size: 12px; line-height: 1.7; }
+  button {
+    margin-top: 14px; width: 100%; padding: 10px; border-radius: 10px; cursor: pointer;
+    border: 1px solid rgba(240,246,252,.14); background: #21262d; color: #e6edf3; font-size: 14px;
+  }
+  button:hover { background: #2d333b; }
+  code { background: rgba(110,118,129,.2); padding: 1px 5px; border-radius: 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+  <main class="card">
+    <h1>用网易云 App 扫码登录</h1>
+    <p class="sub">登录后网关就能取 VIP 曲的原唱（Cookie 只存在你自己电脑上）。</p>
+    <div class="qr-box">
+      <div id="qr"></div>
+      <div id="mask" class="mask"></div>
+    </div>
+    <p id="status" class="status">正在生成二维码…</p>
+    <button id="refresh" hidden>换一张</button>
+    <p class="foot">
+      扫码后如果提示"确认登录"，请在手机上点确认。<br>
+      登录态会写进网关的 <code>config.json</code>（<code>source.neteaseCookie</code>），不需要手动复制。
+    </p>
+  </main>
+  <script src="/login/qrcode.js"></script>
+  <script>
+  (function () {
+    const token = new URLSearchParams(location.search).get('token') || '';
+    const qrHost = document.getElementById('qr');
+    const mask = document.getElementById('mask');
+    const statusEl = document.getElementById('status');
+    const refresh = document.getElementById('refresh');
+    let key = '';
+    let timer = null;
+
+    const setStatus = (text, kind) => {
+      statusEl.textContent = text;
+      statusEl.className = 'status' + (kind ? ' ' + kind : '');
+    };
+    const showMask = (text) => { mask.textContent = text || ''; mask.classList.toggle('show', Boolean(text)); };
+    const api = (path, options) => fetch(path, {
+      ...options,
+      headers: { 'x-gateway-token': token, ...(options && options.headers ? options.headers : {}) }
+    }).then((r) => r.json());
+
+    function render(text) {
+      // 内置的 qrcode-generator：0=自动纠错级别，'M' 容错
+      const qr = qrcode(0, 'M');
+      qr.addData(text);
+      qr.make();
+      qrHost.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 4, scalable: true });
+    }
+
+    async function start() {
+      clearInterval(timer);
+      refresh.hidden = true;
+      showMask('');
+      setStatus('正在生成二维码…');
+      try {
+        const data = await api('/login/start', { method: 'POST' });
+        if (!data.ok) throw new Error(data.message || '生成失败');
+        key = data.key;
+        render(data.loginUrl);
+        setStatus('请用网易云 App 扫一扫');
+        timer = setInterval(poll, 2000);
+      } catch (error) {
+        setStatus('生成失败：' + error.message, 'bad');
+        refresh.hidden = false;
+      }
+    }
+
+    async function poll() {
+      try {
+        const data = await api('/login/status?key=' + encodeURIComponent(key));
+        if (data.state === 'waiting') { setStatus('请用网易云 App 扫一扫'); showMask(''); }
+        else if (data.state === 'scanned') { setStatus('已扫码，请在手机上点「确认登录」'); showMask('已扫码，请在手机上确认'); }
+        else if (data.state === 'ok') {
+          clearInterval(timer);
+          setStatus('登录成功，可以关掉这个页面了 ✅', 'ok');
+          showMask('登录成功 ✅');
+        } else if (data.state === 'expired') {
+          clearInterval(timer);
+          setStatus('二维码过期了，点下面换一张', 'bad');
+          showMask('已过期');
+          refresh.hidden = false;
+        } else {
+          clearInterval(timer);
+          setStatus('失败：' + (data.message || data.state), 'bad');
+          refresh.hidden = false;
+        }
+      } catch (error) {
+        // 网络抖动不立刻报错，等下一轮
+      }
+    }
+
+    refresh.addEventListener('click', start);
+    if (!token) {
+      setStatus('缺少令牌：请用 /login?token=<网关令牌> 打开本页', 'bad');
+      return;
+    }
+    start();
+  })();
+  </script>
+</body>
+</html>

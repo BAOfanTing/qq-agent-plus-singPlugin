@@ -1,0 +1,158 @@
+{
+  "id": "sing",
+  "apiVersion": 2,
+  "name": "点歌唱歌",
+  "version": "0.1.0",
+  "description": "点一首歌，让机器人用你训练好的音色翻唱，并把成品发到群里。换声与搜歌在你自己的电脑上跑（gateway/），插件只做转发。",
+  "entry": "index.mjs",
+  "engines": {
+    "minVersion": "0.9.10"
+  },
+  "capabilities": [
+    "tools",
+    "schedule",
+    "log",
+    "config",
+    "secrets",
+    "http",
+    "media",
+    "send"
+  ],
+  "schedule": [
+    {
+      "name": "daily_prune",
+      "everyMs": 3600000
+    }
+  ],
+  "httpMaxBytes": 131072,
+  "tools": [
+    {
+      "name": "sing_song",
+      "description": "点歌并把翻唱结果作为【群文件】发到当前群（几十秒，可下载）。⚠️ 如果用户要的是「语音」「语音条」「直接发语音」，不要用这个工具，改用 send_voice 并把输入写成「唱：歌名」——那条路发的是 QQ 语音条。",
+      "timeoutMs": 180000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "song": {
+            "type": "string",
+            "description": "歌名，可以带歌手（例如「孤勇者 陈奕迅」）"
+          },
+          "voice": {
+            "type": "string",
+            "description": "音色名（网关里配置的模型名）；留空用插件设置里的默认音色"
+          },
+          "maxSeconds": {
+            "type": "number",
+            "description": "最多唱多少秒（5-180），默认取插件设置"
+          }
+        },
+        "required": [
+          "song"
+        ]
+      }
+    },
+    {
+      "name": "sing_search",
+      "description": "只搜歌不出声：返回几首候选（歌名、歌手、时长），适合先确认点哪一首。",
+      "timeoutMs": 25000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "keyword": {
+            "type": "string",
+            "description": "搜索关键词（歌名或「歌名 歌手」）"
+          }
+        },
+        "required": [
+          "keyword"
+        ]
+      }
+    },
+    {
+      "name": "netease_login",
+      "description": "给出网易云扫码登录的链接：让用户在自己电脑/手机上打开、用网易云 App 扫码，登录后就能点 VIP 曲的原唱。只有用户问到「登录」「原唱需要VIP」「取不到歌」时用。",
+      "timeoutMs": 15000,
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "sing_status",
+      "description": "查点歌后端在不在线、有哪些可用音色。网关没连上（电脑关机/隧道断了）时用这个确认。",
+      "timeoutMs": 20000,
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ],
+  "settings": {
+    "groups": [
+      {
+        "key": "gateway",
+        "title": "点歌后端",
+        "description": "后端跑在你自己电脑上（gateway/ 目录），用隧道暴露成 https 域名后把地址填这里。",
+        "fields": [
+          {
+            "key": "gatewayUrl",
+            "label": "网关地址",
+            "type": "text",
+            "default": "",
+            "help": "形如 https://sing.example.com 或 https://xxxx.trycloudflare.com（不要带结尾斜杠）"
+          },
+          {
+            "key": "gatewayUrlFallback",
+            "label": "备用网关地址",
+            "type": "text",
+            "default": "",
+            "help": "主地址连不上时自动再试这个（例如服务器专线 https://<你的IP>:8898）。留空表示不启用"
+          },
+          {
+            "key": "apiToken",
+            "label": "网关令牌",
+            "type": "secret",
+            "help": "与网关 config.json 里的 token 一致；留空表示网关没开鉴权（不推荐）"
+          },
+          {
+            "key": "defaultVoice",
+            "label": "默认音色",
+            "type": "text",
+            "default": "",
+            "help": "网关配置里的音色名（比如 me）；留空表示用网关的默认值"
+          },
+          {
+            "key": "maxSeconds",
+            "label": "最长演唱秒数",
+            "type": "number",
+            "default": 60,
+            "min": 5,
+            "max": 180,
+            "help": "整首翻唱很慢也很吃显存，群里点歌建议 40-90 秒"
+          }
+        ]
+      },
+      {
+        "key": "advanced",
+        "title": "高级",
+        "fields": [
+          {
+            "key": "pollIntervalMs",
+            "label": "任务轮询间隔（毫秒）",
+            "type": "number",
+            "default": 2000,
+            "min": 1000,
+            "max": 10000
+          },
+          {
+            "key": "allowInsecureHttp",
+            "label": "允许 http 网关",
+            "type": "boolean",
+            "default": false,
+            "help": "仅用于调试。宿主禁止插件访问内网地址，本机网关必须用 https 隧道暴露"
+          }
+        ]
+      }
+    ]
+  }
+}

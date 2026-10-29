@@ -1,0 +1,38 @@
+# 运行产物
+gateway-run/
+*.log
+
+# 本地配置（含令牌，绝不入库）
+gateway/config.json
+gateway/config.local.json
+
+# 打包产物
+*.tar.gz
+*.tgz
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# 依赖（本仓库零依赖，这些只防误提交）
+node_modules/
+
+# ── 本地模型与运行时（体积大，绝不入库）────────────────────────────
+# 跟踪的只有 sing-model/run.py 和三个拉取脚本；下面这些是"机器上跑出来的东西"
+sing-model/rvc/
+sing-model/downloads/
+sing-model/tmp/
+sing-model/out/
+sing-model/bin/
+sing-model/voices/
+sing-model/__pycache__/
+*.pth
+*.pt
+*.ckpt
+*.index
+*.onnx
+*.safetensors
+*.whl

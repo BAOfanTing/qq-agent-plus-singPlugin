@@ -1,0 +1,90 @@
+# 点歌唱歌
+
+群里说一句「唱一首 XXX」，机器人用你自己电脑上的换声模型翻唱，成品以**群文件**发出来。
+
+- 插件 id：`sing` · `apiVersion: 2` · 入口 `index.mjs`
+- 宿主要求：qq-agent-plus ≥ `0.9.10`（用到 `cap.media.download` / `cap.send.file` / `secrets` / 工具级 `timeoutMs`）
+- 零依赖：不 import 宿主内部模块，不在使用者机器上跑 npm
+
+## 能做什么
+
+- **点歌翻唱**：群里 @机器人说「唱一首孤勇者」，几十秒后收到一段用目标音色唱的音频文件
+- **先试听再点**：不确定点哪首时让它先搜（返回歌名/歌手/时长），确认了再唱
+- **后端离线时说得清**：你电脑关机或隧道断了，它会直说"后端不在"，不影响群里正常聊天
+
+## 群里怎么问
+
+- 「唱一首孤勇者」
+- 「先搜一下 孤勇者 有哪些版本」（只搜不出声）
+- 「点歌后端还活着吗？」（查网关与可用音色）
+
+触发方式跟着 qq-agent 的常规规则走：群里一般需要 @机器人 或命中触发词。
+
+## 它需要什么权限（装之前请看完）
+
+| 能力 | 为什么需要 |
+|---|---|
+| `tools` | 给模型三个工具 |
+| `http` | 调你自己的点歌网关（宿主**强制禁内网**，所以网关必须是公网 https） |
+| `media` | 把换声成品下载到 `plugin-data/sing/media/`（宿主规定：插件只能发这个目录里的文件） |
+| `send` | 用 `cap.send.file` 把成品发到群（**只支持群聊**） |
+| `config` / `secrets` | 读设置、加密保存网关令牌 |
+| `log` | 把点歌进度写进宿主日志（统一前缀与脱敏） |
+
+插件**不写任何外部账号数据**、不发文字消息、不调模型，所以没有 `approval` / `quota` 声明。
+
+## 三个工具
+
+| 工具（模型看到的全名） | 参数 | 行为 |
+|---|---|---|
+| `sing__sing_song` | `song`（必填）、`voice`、`maxSeconds` | 点歌 → 等换声 → 下载 → 发群文件；只支持群聊 |
+| `sing__sing_search` | `keyword`（必填） | 只搜不出声，返回 5 条候选 |
+| `sing__sing_status` | 无 | 查网关在不在、有哪些音色 |
+
+工具级超时：`sing_song` 180 秒（内部轮询到 160 秒主动放弃），其余 20-25 秒。
+
+## 设置项
+
+| 键 | 类型 | 说明 |
+|---|---|---|
+| `gatewayUrl` | text | 网关地址，`https://…`，不带结尾斜杠。**必须是有公网域名的 https**（宿主禁止插件访问 `127.0.0.1`） |
+| `apiToken` | secret | 与网关 `config.json` 的 `token` 一致；宿主用 AES-256-GCM 加密落盘，不回显明文 |
+| `defaultVoice` | text | 音色名，留空用网关默认值 |
+| `maxSeconds` | number | 默认 60，范围 5-180 |
+| `pollIntervalMs` | number | 轮询间隔，默认 2000（1-10 秒） |
+| `allowInsecureHttp` | boolean | 仅调试用；内网地址照样会被宿主拦住 |
+
+## 安装
+
+```bash
+# 手工：拷目录
+cp -r plugin/sing "$DATA_DIR/plugins/sing"
+
+# 或者走宿主自己的打包 + 安装器（推荐）
+node <qq-agent-plus>/scripts/plugin-pack.mjs ./plugin/sing \
+  --base-url https://github.com/BAOfanTing/qq-agent-plus-SingPlugin --tag v0.1.0
+node <qq-agent-plus>/src/ops.js plugins install sing-0.1.0.tar.gz
+```
+
+装完在控制台「插件」页确认信任（首次加载会提示它要联网、能发文件），再去设置里填网关地址。
+
+## 本地调试
+
+```bash
+# 用宿主的假宿主跑真协议（--http-mock 可以钉住网关响应，不必真起网关）
+node <qq-agent-plus>/scripts/plugin-dev.mjs . --call sing_status
+
+# 本仓库自带的真协议集成测试（这个测试文件自己扮演宿主）
+cd ../.. && node --test test/plugin-protocol.test.mjs
+```
+
+## 失败时会发生什么
+
+| 情况 | 结果 |
+|---|---|
+| 网关没起来 / 隧道断了 | 「网关返回失败：…」，模型会告诉用户后端离线；**文字聊天不受影响** |
+| 令牌不对 | 「网关拒绝了请求：令牌不对…」 |
+| 换声失败（显存不够、模型路径错） | 网关返回 `failed` + 原因，插件原样转给模型 |
+| 等了 160 秒还没好 | 「等换声超时…把 maxSeconds 调小再试」，不等宿主硬杀进程 |
+| 在私聊里点歌 | 直接拒绝并说明"只能群聊"（宿主 `send.file` 的限制） |
+| 网关给了无法识别的任务状态 | 按失败处理并说明原因，绝不假装在跑 |

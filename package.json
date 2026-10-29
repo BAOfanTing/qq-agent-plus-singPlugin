@@ -1,0 +1,28 @@
+{
+  "name": "qq-agent-plus-sing-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "QQ Agent 的点歌唱歌插件 + 本机换声网关（插件是薄客户端，换声在你的电脑上跑）",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "node --test",
+    "gateway": "node gateway/server.mjs"
+  },
+  "license": "MIT",
+  "author": "BAOfanTing",
+  "keywords": [
+    "qq-agent",
+    "plugin",
+    "singing",
+    "rvc",
+    "sovits",
+    "karaoke"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BAOfanTing/qq-agent-plus-SingPlugin.git"
+  }
+}
