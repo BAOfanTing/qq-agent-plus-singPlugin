@@ -113,3 +113,49 @@ loginctl enable-linger "$USER"
 | 插件说「禁止访问内网/本机地址」 | 网关地址填成了 `http://127.0.0.1:...` 或内网 IP，换成 https 域名 |
 | 插件说「令牌不对」 | 插件设置里的「网关令牌」与 `config.json` 的 `token` 不一致 |
 | 隧道地址每次重启都变 | 用的是快速隧道，改固定域名方案 |
+
+---
+
+## 备用专线：ssh -R + nginx TLS（地址永不变）
+
+快速隧道（`trycloudflare.com`）是 Cloudflare 明说"无可用性保证"的免费通道，偶发抖动。
+如果受够了，可以改走**你自己服务器的反向隧道 + nginx TLS**：
+
+```
+你的电脑 ──ssh -R──► <你的服务器IP>:127.0.0.1:8899 ──nginx TLS(8898)──► 宿主
+```
+
+优点：不经过第三方、延迟毫秒级、不受 IPv6/Happy Eyeballs 影响。
+代价：要先在安全组放行 **8898**，并且宿主进程要信任本机自签 CA。
+
+**启用**
+
+```bash
+# 服务器（各一次）
+bash install-nginx-tls.sh                 # 生成 CA/证书 + 8898 站点（当前是 .disabled）
+mv /etc/nginx/conf.d/sing-gateway.conf.disabled /etc/nginx/conf.d/sing-gateway.conf
+nginx -t && systemctl reload nginx
+```
+
+```powershell
+# 你电脑
+powershell -ExecutionPolicy Bypass -File scripts/run-tunnel-local.ps1 -Host root@<你的服务器IP>
+```
+
+```bash
+# 服务器：把两条通道都指过去
+bash set-gateway-url.sh https://<你的服务器IP>:8898 <网关令牌>
+bash set-tts-url.sh     https://<你的服务器IP>:8898/v1
+```
+
+**切回 Cloudflare**
+
+```bash
+bash set-gateway-url.sh https://<你的>.trycloudflare.com <网关令牌>
+bash set-tts-url.sh     https://<你的>.trycloudflare.com/v1
+mv /etc/nginx/conf.d/sing-gateway.conf /etc/nginx/conf.d/sing-gateway.conf.disabled
+nginx -t && systemctl reload nginx
+```
+
+> 宿主的 `NODE_EXTRA_CA_CERTS=/opt/qq-agent/tls/ca.crt` 一直留着没坏处（只影响自签那几条链路）。
+> 证书链坏了（CA 重建过）就跑 `bash reissue-server-cert.sh`。
