@@ -18,6 +18,11 @@ export function runProcess(command, args, { timeoutMs = 300000, env = null } = {
     }
     let stderr = '';
     const timer = setTimeout(() => {
+      // Windows 上 child.kill 只杀直接子进程；run.py 的孙进程会活下来霸占 GPU。
+      // 这里用 taskkill /T 把整棵树收掉（2026-10-29 踩过：孤儿进程空转 9 小时）。
+      if (process.platform === 'win32' && child.pid) {
+        try { spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { windowsHide: true }); } catch { /* 忽略 */ }
+      }
       child.kill('SIGKILL');
       reject(Object.assign(new Error(`${command} 超时（${Math.round(timeoutMs / 1000)} 秒）`), { code: 'E_TIMEOUT' }));
     }, timeoutMs);

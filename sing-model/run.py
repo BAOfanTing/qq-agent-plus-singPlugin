@@ -125,6 +125,24 @@ def ffmpeg_bin_dir() -> str | None:
     return str(shim)
 
 
+
+def _kill_tree(pid: int) -> None:
+    """把某个进程连同它的子进程一起杀掉。
+
+    ⚠️ Windows 上 child.kill() 只杀父进程：run.py 被杀掉后，
+    它派生的 `python -m infer.cli` 会变成孤儿继续霸占 GPU
+    （2026-10-29 实测：一个 200 秒任务在后台空转 9 个多小时、显存 9.8G 100%）。
+    """
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                           capture_output=True, timeout=30)
+        else:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except Exception:
+        pass
+
+
 def run(cmd: list[str], what: str, timeout: int = 1800, gpu_fraction: float | None = None) -> None:
     log(f"{what}：{' '.join(str(c) for c in cmd[:6])} ...")
     env = os.environ.copy()
@@ -133,13 +151,29 @@ def run(cmd: list[str], what: str, timeout: int = 1800, gpu_fraction: float | No
         env["SING_GPU_MEM_FRACTION"] = str(gpu_fraction)
         env["PYTHONPATH"] = os.pathsep.join([str(GPU_CAP_DIR), env.get("PYTHONPATH", "")]).strip(os.pathsep)
         env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-    extra = [p for p in (ffmpeg_bin_dir(), str(Path(sys.executable).parent / "Scripts")) if p]
-    env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
-    proc = subprocess.run(cmd, cwd=str(RVC_DIR), timeout=timeout, capture_output=True, text=True, env=env)
-    if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-6:]
-        fail(f"{what} 失败（退出码 {proc.returncode}）：" + " | ".join(tail))
 
+    # cwd 必须留在 RVC 目录：`-m infer.cli` 要靠它找到 infer 包
+    # （重写 run() 时漏了这条，RVC 秒退，2026-10-30 实测）
+    kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "env": env, "text": True,
+              "encoding": "utf-8", "errors": "replace", "cwd": str(RVC_DIR)}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+
+    child = subprocess.Popen(cmd, **kwargs)
+    try:
+        out, _ = child.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(child.pid)          # 连孙进程一起收掉，别留孤儿霸占显卡
+        child.kill()
+        child.communicate()
+        fail(f"{what}超时（{timeout // 60} 分钟），已终止（含子进程）")
+    else:
+        if child.returncode != 0:
+            tail = " ".join((out or "").strip().splitlines()[-3:])
+            fail(f"{what}失败（退出码 {child.returncode}）：{tail[:400]}")
+    log(f"{what}完成")
 
 def separate(src: Path, out_dir: Path, model_name: str | None, gpu_fraction: float | None = None) -> tuple[Path | None, Path | None]:
     """返回 (人声, 伴奏)。分离不可用时抛异常，由调用方决定降级。
@@ -237,13 +271,23 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="sing-") as tmp:
         tmp_dir = Path(tmp)
         # 先裁再分离：分离也吃 GPU/CPU 时间，4 分钟的歌整段分离纯属浪费
+        # 10G 卡上的硬约束：90 秒成品峰值约 8.5G（受闸）；再长就要 9.4G 以上，
+        # 0.9 的闸会让 RVC 直接 OOM（conv_forward 报错，2026-10-30 实测 120 秒必现）。
+        # 所以：超过 95 秒（或整首）自动放开闸，并在日志里说清楚。
+        gpu_fraction = args.gpu_fraction
+        long_audio = args.max_seconds == 0 or args.max_seconds > 95
+        if gpu_fraction is not None and gpu_fraction < 1.0 and long_audio:
+            label = "整首" if args.max_seconds == 0 else f"{args.max_seconds} 秒"
+            log(f"长音频（{label}）：自动放开显存上限（{gpu_fraction:.2f} → 不限制），否则会 OOM")
+            gpu_fraction = None
+
         src_maybe_trimmed = trim(src, args.max_seconds, tmp_dir) if args.max_seconds > 0 else src
         vocal_src = src_maybe_trimmed
         inst_path: Path | None = None
 
         if not args.no_separate:
             try:
-                vocal_src, inst_path = separate(src_maybe_trimmed, tmp_dir, args.sep_model, args.gpu_fraction)
+                vocal_src, inst_path = separate(src_maybe_trimmed, tmp_dir, args.sep_model, gpu_fraction)
                 log(f"分离完成：人声 {vocal_src.name}，伴奏 {'有' if inst_path else '无'}")
             except Exception as exc:  # 分离失败不该让整件事失败
                 log(f"分离没成功（{exc}），直接对原音频换声")
@@ -268,7 +312,7 @@ def main() -> int:
                "--overwrite"]
         if index is not None:
             cmd += ["--index", str(index)]
-        run(cmd, "RVC 换声", gpu_fraction=args.gpu_fraction)
+        run(cmd, "RVC 换声", gpu_fraction=gpu_fraction)
         if not converted.exists() or converted.stat().st_size == 0:
             fail("RVC 没有产出音频")
 

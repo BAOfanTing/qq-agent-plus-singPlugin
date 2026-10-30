@@ -12,6 +12,8 @@
 > ⚠️ **前提**：换声模型（RVC）和网关都跑在**你自己的电脑**上（本仓库的 `gateway/` 与 `sing-model/`）。
 > 服务器只做转发、不装模型；电脑没开时机器人只会提示「后端离线」。
 
+![image-20261029231050894](https://gitee.com/baofanting/image/raw/master/image/20261029231050950.png)
+
 ## 它怎么工作
 
 ```
