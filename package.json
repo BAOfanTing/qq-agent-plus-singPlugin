@@ -1,6 +1,6 @@
 {
   "name": "qq-agent-plus-sing-plugin",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "QQ Agent 的点歌唱歌插件 + 本机换声网关（插件是薄客户端，换声在你的电脑上跑）",
   "type": "module",

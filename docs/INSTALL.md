@@ -218,6 +218,15 @@ cp config.example.json config.json
 | `voiceMessageMaxSeconds` | 语音条通道硬上限，默认 300 秒（插件推上来的值会被它夹紧） |
 | `voiceMessageDefaultSeconds` | 语音条默认时长，默认 90 秒（插件没推值时用它；0 = 整首由插件设置决定） |
 | `voice.segmentSeconds` | 长音频切段长度，默认 **30** 秒（整批只加载一次模型；设 0 = 不分段） |
+| `voice.serveCommand` | 常驻换声命令（`"<rvc的python>" "<仓库>/sing-model/run.py" --serve`）；留空 = 每次起进程 |
+| `voice.serveIdleMs` | 常驻进程空闲多久自动退出，默认 600000（10 分钟） |
+| `voice.gpuFraction` | 常驻进程的显存上限比例，默认 0.9 |
+| `say.engine` | `edge`（微软神经语音，**默认**，需联网 + edge-tts）/ `windows`（系统自带，机械）/ `none`（关掉只说文字） |
+| `say.python` | `edge` 引擎用的解释器路径（装了 edge-tts 的那个 venv） |
+| `say.pitch` | 音高偏移 Hz（仅 edge，-200~200） |
+| `say.voice` | 语音名，留空用系统默认（中文系统一般是 `Microsoft Huihui Desktop`） |
+| `say.postVoice` | `true` = TTS 之后再过一遍换声，用她的音色说话（每句多 10-20 秒） |
+| `say.postVoiceModel` | 换声用的音色名，留空 = `voice.defaultVoice` |
 | `filesTtlHours` | 成品保留小时数（默认 24，另有每天 0 点清理） |
 
 本机这套的实际配置（供对照）：
@@ -306,6 +315,11 @@ curl -X POST http://127.0.0.1:3210/api/plugins/settings \
 最后在插件页**启用**它（`plugins.enabledIds` 里要有 `sing`）。
 
 ### 1.9 语音条通道：把宿主 TTS 指向网关
+
+> ⚠️ 这里填的地址**不要用 Cloudflare 快速隧道**：宿主是同步等音频（几秒到一分半），
+> 快速隧道约 100 秒会回 `524`。请用本机专线 `https://127.0.0.1:8898/v1`
+> （配法见 [TUNNEL.md](TUNNEL.md) 的「备用专线」）或 named tunnel。
+> 插件的「网关地址」仍可继续用快速隧道 —— 它只发短请求。
 
 控制台 → 设置 → **语音回复 (TTS)**：
 

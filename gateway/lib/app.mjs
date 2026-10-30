@@ -7,8 +7,9 @@ import { createJobQueue } from './jobs.mjs';
 import { createSource } from './sources.mjs';
 import { createVoiceEngine } from './voice.mjs';
 import { transcodeTo, probeSeconds } from './audio.mjs';
+import { createSayEngine } from './say.mjs';
 
-export const VERSION = '1.0.1';
+export const VERSION = '1.0.2';
 const WEB_DIR = path.join(import.meta.dirname, '..', 'web');
 const NETEASE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const MAX_BODY_BYTES = 8 * 1024;
@@ -97,6 +98,7 @@ export function createApp({
   config,
   source = createSource(config),
   voice = createVoiceEngine(config),
+  say = createSayEngine(config),
   persistCookie = null,
   now = () => Date.now()
 }) {
@@ -340,6 +342,82 @@ export function createApp({
     return { removed, bytes };
   };
 
+  /**
+   * 把一段话读成语音条（不走 GPU 队列：TTS 是 CPU 活，几秒就完，没必要排队）。
+   * 输出统一转成 mp3 单声道 96k，天然在宿主 4MB 限内。
+   */
+  async function handleSay(req, res, text) {
+    const startedAt = Date.now();
+    const raw = path.join(tmpDir, `say-${Date.now()}.wav`);
+    let spoke;
+    try {
+      spoke = await say.convert({ text, output: raw });
+    } catch (error) {
+      throw Object.assign(new Error(`读这段话失败：${String(error?.message ?? error).slice(0, 200)}`),
+        { code: error?.code || 'E_SAY' });
+    }
+
+    // 可选：把 TTS 结果再过一遍换声，用她的音色说话（RVC 是"换音色"，不能纯文字生成，
+    // 所以必须先 TTS 再换声）。代价是每句多 10-20 秒（模型加载 + 推理）。
+    // TTS 引擎可能直接产出 mp3（edge），以它返回的 file 为准
+    let spoken = spoke.file || raw;
+    if (config.say.postVoice && voice.name !== 'none') {
+      const converted = path.join(tmpDir, `say-conv-${Date.now()}.wav`);
+      try {
+        await voice.convert({
+          // 用引擎实际产出的文件（edge 是 mp3，SAPI 是 wav），别写死 raw
+          input: spoken,
+          output: converted,
+          voice: config.say.postVoiceModel || '',
+          maxSeconds: 0,
+          // 说话本身就是干净人声，跳过分离（分离模型对语音没意义，还白等）
+          extra: '--no-separate'
+        });
+        if (fs.existsSync(converted) && fs.statSync(converted).size > 1000) {
+          spoken = converted;
+          console.log(`[say] 已用音色「${config.say.postVoiceModel || voice.voices?.[0] || '默认'}」重说一遍`);
+        }
+      } catch (error) {
+        // 换声失败不该让"说话"整单失败：退回 TTS 原声
+        console.warn(`[say] 换声失败，发 TTS 原声：${String(error?.message ?? error).slice(0, 140)}`);
+      }
+    }
+
+    const mp3 = path.join(tmpDir, `say-${Date.now()}.mp3`);
+    let out = spoken;
+    let contentType = 'audio/wav';
+    // edge 引擎直接产出 mp3（神经语音），不用再转一遍
+    if (/\.mp3$/i.test(spoken)) {
+      out = spoken;
+      contentType = 'audio/mpeg';
+    }
+    try {
+      const ok = contentType === 'audio/mpeg' ? false : await transcodeTo(spoken, mp3, { ext: 'mp3' });
+      if (ok && fs.existsSync(mp3) && fs.statSync(mp3).size > 1000) {
+        out = mp3;
+        contentType = 'audio/mpeg';
+      }
+    } catch (error) {
+      console.warn(`[say] 转 mp3 失败，退回 wav：${String(error?.message ?? error).slice(0, 120)}`);
+    }
+
+    const buffer = fs.readFileSync(out);
+    const probed = Math.round(await probeSeconds(out)) || 0;
+    // 探不到时长就按中文语速估（约 4.5 字/秒），别报 0 让宿主又说"才一秒"
+    const seconds = probed > 0 ? probed : Math.max(1, Math.round(spoke.chars / 4.5));
+    console.log(`[say] ${spoke.chars} 字 → ${seconds} 秒（${Math.round(buffer.length / 1024)} KB，${Date.now() - startedAt}ms）`);
+    res.writeHead(200, {
+      'content-type': contentType,
+      'content-length': buffer.length,
+      'x-audio-seconds': String(seconds)
+    });
+    res.end(buffer);
+    // 临时文件立刻清掉（成品目录里不需要留）
+    for (const file of [raw, spoken, mp3]) {
+      try { fs.rmSync(file, { force: true }); } catch { /* 忽略 */ }
+    }
+  }
+
   const handler = async (req, res) => {
     let url;
     try {
@@ -367,6 +445,7 @@ export function createApp({
         ok: true,
         version: VERSION,
         engine: voice.name,
+        say: say.name,
         voiceConfigured,
         // 没接换声模型就报空列表：不把"根本不存在的音色"说成可用
         voices: voiceConfigured ? voice.voices : [],
@@ -469,10 +548,16 @@ export function createApp({
         if (!input) throw Object.assign(new Error('缺少 input（要唱的歌名或要说的话）'), { code: 'E_ARGS' });
         const song = extractSongRequest(input);
         if (!song) {
-          throw Object.assign(new Error(
-            '这个网关只会唱歌，不做文字转语音。想让机器人说话，请把 TTS 指向别处；'
-            + '想让它唱，就让模型用「唱：歌名」的格式调用。'
-          ), { code: 'E_NOT_TTS' });
+          // 不是点歌 → 说话（TTS）。宿主 send_voice 指向本网关后，机器人"想说话"也会打到这里，
+          // 以前一律回"只会唱歌"，宿主只好退回文字；现在直接读出来发语音条。
+          if (say.name === 'none') {
+            throw Object.assign(new Error(
+              '这个网关既没接换声唱歌、也没开 TTS（config.say.engine = none）。'
+              + '想让机器人说话就把 say.engine 设成 windows；想让它唱，就用「唱：歌名」的格式调用。'
+            ), { code: 'E_NOT_TTS' });
+          }
+          await handleSay(req, res, input);
+          return;
         }
         // 语音条能有多长，取决于协议端与服务端策略，不是固定 60 秒：
         // 用 config.voiceMessageMaxSeconds 自己试（默认 120）。被拒就调小。
@@ -624,5 +709,5 @@ export function createApp({
     }
   };
 
-  return { handler, queue, filesDir, tmpDir, pruneFiles, pruneBeforeToday };
+  return { handler, queue, filesDir, tmpDir, pruneFiles, pruneBeforeToday, say };
 }

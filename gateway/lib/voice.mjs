@@ -20,6 +20,8 @@ function fillCommand(template, values) {
   return String(template)
     .replace(/\{maxSeconds\}/g, () => String(values.maxSeconds ?? 0))
     .replace(/\{segmentSeconds\}/g, () => String(values.segmentSeconds ?? 0))
+    // {extra} 原样插入（比如 --no-separate），不加引号
+    .replace(/\{extra\}/g, () => String(values.extra ?? ''))
     .replace(/\{(input|output|pitch|voice)\}/g, (_, key) => quote(values[key] ?? ''));
 }
 
@@ -40,17 +42,121 @@ export function createVoiceEngine(config) {
     };
   }
 
-  return {
-    name: 'command',
-    voices: [config.voice.defaultVoice].filter(Boolean),
-    convert({ input, output, voice, maxSeconds = 0, onProgress = null }) {
+  /**
+   * 常驻换声客户端：一个 python 进程里模型只加载一次，之后每次请求只花 1-3 秒。
+   * 之前每请求起一个进程，光加载模型就要 8-12 秒（说一句话 14 秒里 12 秒在加载）。
+   *
+   * 协议：stdin/stdout 各一行 JSON（见 sing-model/run.py 的 --serve）。
+   * 空闲 serveIdleMs 后自动关掉，把显存还给系统；任何异常都退回"每次起进程"的老路。
+   */
+  function createResident(config) {
+    const serveCommand = String(config.voice.serveCommand || '').trim();
+    if (!serveCommand) return null;
+    const idleMs = Math.max(60000, Number(config.voice.serveIdleMs) || 600000);
+
+    let proc = null;
+    let buffer = '';
+    let nextId = 1;
+    let idleTimer = null;
+    const pending = new Map();   // id -> { resolve, reject, onProgress }
+
+    const stop = (reason) => {
+      if (!proc) return;
+      const child = proc;
+      proc = null;
+      try { child.kill(); } catch { /* 忽略 */ }
+      for (const [, entry] of pending) entry.reject(Object.assign(new Error(`常驻换声进程退出（${reason}）`), { code: 'E_SERVE_EXIT' }));
+      pending.clear();
+      console.log(`[voice] 常驻换声进程已关闭：${reason}`);
+    };
+
+    const touchIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => stop(`空闲 ${Math.round(idleMs / 60000)} 分钟`), idleMs);
+      idleTimer.unref?.();
+    };
+
+    const ensure = () => {
+      if (proc) return proc;
+      const child = spawn(serveCommand, { shell: true, windowsHide: true });
+      proc = child;
+      child.stdout?.on('data', (chunk) => {
+        buffer += chunk.toString('utf8');
+        let index;
+        while ((index = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, index).trim();
+          buffer = buffer.slice(index + 1);
+          if (!line) continue;
+          let message = null;
+          try { message = JSON.parse(line); } catch { continue; }
+          if (!message || message.id === undefined || message.id === null) continue;
+          const entry = pending.get(message.id);
+          if (!entry) continue;
+          if (message.event) {
+            try { entry.onProgress?.(message); } catch { /* 忽略 */ }
+            continue;
+          }
+          pending.delete(message.id);
+          if (message.ok) entry.resolve(message);
+          else entry.reject(Object.assign(new Error(message.error || '常驻换声失败'), { code: 'E_SERVE' }));
+        }
+      });
+      child.stderr?.on('data', (chunk) => {
+        // run.py 的日志走 stderr，这里只留最后一点给报错用
+        const text = chunk.toString('utf8').trim();
+        if (text) console.log(`[voice] ${text.slice(-300)}`);
+      });
+      child.on('close', (code) => stop(`退出码 ${code}`));
+      child.on('error', (error) => stop(`启动失败：${error.message}`));
+      console.log('[voice] 常驻换声进程已启动（模型按音色缓存）');
+      return child;
+    };
+
+    return {
+      name: 'resident',
+      async convert({ input, output, voice, maxSeconds = 0, onProgress = null, extra = '' }) {
+        const child = ensure();
+        const id = nextId++;
+        const request = {
+          id,
+          input,
+          output,
+          voice: voice || config.voice.defaultVoice,
+          pitch: Number(config.voice.pitch) || 0,
+          maxSeconds: Math.max(0, Math.floor(Number(maxSeconds) || 0)),
+          segmentSeconds: Math.max(0, Math.floor(Number(config.voice.segmentSeconds) || 0)),
+          indexRate: 0.75,
+          gpuFraction: Number(config.voice.gpuFraction) || 0,
+          noSeparate: String(extra || '').includes('--no-separate')
+        };
+        const done = new Promise((resolve, reject) => {
+          pending.set(id, { resolve, reject, onProgress });
+        });
+        touchIdle();
+        child.stdin?.write(`${JSON.stringify(request)}\n`);
+        try {
+          return await done;
+        } finally {
+          pending.delete(id);
+          touchIdle();
+        }
+      },
+      shutdown: () => stop('手动关闭')
+    };
+  }
+
+  const resident = createResident(config);
+
+  // 一次性进程（老路，也是常驻失败时的兜底）
+  const oneShot = ({ input, output, voice, maxSeconds = 0, onProgress = null, extra = '' }) => {
       const values = {
         input,
         output,
         pitch: String(config.voice.pitch),
         voice: voice || config.voice.defaultVoice,
         maxSeconds: String(Math.max(0, Math.floor(Number(maxSeconds) || 0))),
-        segmentSeconds: String(Math.max(0, Math.floor(Number(config.voice.segmentSeconds ?? 75) || 0)))
+        segmentSeconds: String(Math.max(0, Math.floor(Number(config.voice.segmentSeconds ?? 75) || 0))),
+        extra: String(extra || '')
       };
       const command = fillCommand(config.voice.command, values);
       const timeoutMs = config.voice.timeoutMs;
@@ -107,6 +213,23 @@ export function createVoiceEngine(config) {
           }
         });
       });
-    }
+  };
+
+  return {
+    name: 'command',
+    voices: [config.voice.defaultVoice].filter(Boolean),
+    async convert({ input, output, voice, maxSeconds = 0, onProgress = null, extra = '' }) {
+      // 常驻优先：省掉每次 8-12 秒的模型加载。任何失败都退回一次性进程。
+      if (resident) {
+        try {
+          return await resident.convert({ input, output, voice, maxSeconds, onProgress, extra });
+        } catch (error) {
+          console.warn(`[voice] 常驻换声失败，退回一次性进程：${String(error?.message ?? error).slice(0, 160)}`);
+        }
+      }
+      return oneShot({ input, output, voice, maxSeconds, onProgress, extra });
+    },
+    oneShot,
+    shutdown: () => resident?.shutdown()
   };
 }

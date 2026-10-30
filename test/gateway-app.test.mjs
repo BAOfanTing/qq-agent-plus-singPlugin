@@ -35,14 +35,15 @@ function fakeDeps() {
   return { source, voice };
 }
 
-async function boot() {
+async function boot(overrides = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'singgw-'));
   const config = normalizeConfig({
     token: TOKEN,
     transcode: 'never',
     maxSeconds: 30,
     filesTtlHours: 1,
-    dataDir
+    dataDir,
+    ...overrides
   });
   const deps = fakeDeps();
   const app = createApp({ config, ...deps });
@@ -295,8 +296,8 @@ test('/v1/audio/speech：唱歌请求直接返回音频字节（给宿主的语�
   } finally { await close(); }
 });
 
-test('/v1/audio/speech：句子明确拒绝（这个端点只唱歌，不做 TTS）', async () => {
-  const { base, close } = await boot();
+test('/v1/audio/speech：关掉 TTS 时，非点歌文本明确拒绝', async () => {
+  const { base, close } = await boot({ say: { engine: 'none' } });
   try {
     const response = await call(base, '/v1/audio/speech', {
       method: 'POST',
@@ -304,7 +305,27 @@ test('/v1/audio/speech：句子明确拒绝（这个端点只唱歌，不做 TTS
     });
     assert.equal(response.status, 400);
     const json = await response.json();
-    assert.match(json.message, /只会唱歌/);
+    assert.match(json.message, /TTS/);
+  } finally { await close(); }
+});
+
+test('/v1/audio/speech：非点歌文本 → 说话（TTS）', async (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('只有 Windows 有系统自带语音');
+    return;
+  }
+  const { base, close } = await boot({ say: { engine: 'windows', voice: '' } });
+  try {
+    const response = await call(base, '/v1/audio/speech', {
+      method: 'POST',
+      body: { input: '你好，这是一条测试语音。' }
+    });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type') || '', /^audio\//);
+    // 真实时长要报出来，否则宿主会退回"按字数估"
+    assert.ok(Number(response.headers.get('x-audio-seconds')) > 0);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    assert.ok(buffer.length > 2000, `音频太小：${buffer.length}`);
   } finally { await close(); }
 });
 

@@ -9,14 +9,29 @@ export const DEFAULT_CONFIG = Object.freeze({
   // 音源：netease（网易云，默认）| local（你自己的音频目录）
   source: { type: 'netease', localDir: '', neteaseCookie: '', limit: 5 },
   // 换声：none（直出原音，用于先跑通链路）| command（调你自己的 RVC/SVC 命令行）
-  voice: { engine: 'none', command: '', timeoutMs: 600000, pitch: 0, outputExt: 'wav', defaultVoice: 'me' },
+  // 说话（TTS）：非点歌的文本走这里，默认用 Windows 自带语音
+  say: {
+    engine: 'windows',
+    voice: '',
+    rate: 0,
+    volume: 100,
+    maxChars: 800,
+    timeoutMs: 60000,
+    python: '',
+    pitch: 0,
+    // 说话也用她的音色：TTS 之后再过一遍换声（多 10-20 秒）
+    postVoice: false,
+    postVoiceModel: ''
+  },
+  voice: { engine: 'none', command: '', timeoutMs: 600000, pitch: 0, outputExt: 'wav', defaultVoice: 'me',
+           serveCommand: '', serveIdleMs: 600000, segmentSeconds: 30, gpuFraction: 0.9 },
   // 输出：auto = 有 ffmpeg 就转 mp3 并裁剪到 maxSeconds；never = 原样发
   transcode: 'auto',
-  maxSeconds: 90,
+  maxSeconds: 600,
   // 成品里显示的「演唱者」——这是机器人自己的名字，不是原唱
   outputArtist: '小鲸鱼',
   // 语音条（/audio/speech）能有多长：实测边界，被协议端拒绝就调小
-  voiceMessageMaxSeconds: 120,
+  voiceMessageMaxSeconds: 600,
   // 语音条默认唱多久（宿主不指定时用它）；受 voiceMessageMaxSeconds 夹紧
   voiceMessageDefaultSeconds: 90,
   filesTtlHours: 24,
@@ -36,6 +51,7 @@ export function normalizeConfig(raw, { rootDir = process.cwd() } = {}) {
   const input = raw && typeof raw === 'object' ? raw : {};
   const source = input.source && typeof input.source === 'object' ? input.source : {};
   const voice = input.voice && typeof input.voice === 'object' ? input.voice : {};
+  const sayInput = input.say && typeof input.say === 'object' ? input.say : {};
 
   const config = {
     port: asInt(input.port, DEFAULT_CONFIG.port, 1, 65535),
@@ -55,7 +71,26 @@ export function normalizeConfig(raw, { rootDir = process.cwd() } = {}) {
       pitch: asInt(voice.pitch, DEFAULT_CONFIG.voice.pitch, -24, 24),
       outputExt: ['wav', 'mp3', 'flac', 'm4a'].includes(asString(voice.outputExt))
         ? asString(voice.outputExt) : DEFAULT_CONFIG.voice.outputExt,
-      defaultVoice: asString(voice.defaultVoice) || DEFAULT_CONFIG.voice.defaultVoice
+      defaultVoice: asString(voice.defaultVoice) || DEFAULT_CONFIG.voice.defaultVoice,
+      // 常驻换声（模型只加载一次）：留空 = 关掉，退回每次起进程
+      serveCommand: asString(voice.serveCommand),
+      serveIdleMs: asInt(voice.serveIdleMs, 600000, 60000, 24 * 3600 * 1000),
+      segmentSeconds: asInt(voice.segmentSeconds, 30, 0, 600),
+      gpuFraction: Number(voice.gpuFraction) >= 0 ? Number(voice.gpuFraction) : 0.9
+    },
+    // 说话：engine=none 关掉（宿主只能说文字）；windows=系统自带语音
+    say: {
+      engine: ['none', 'windows', 'edge'].includes(asString(sayInput.engine)) ? asString(sayInput.engine) : DEFAULT_CONFIG.say.engine,
+      voice: asString(sayInput.voice),
+      // edge 引擎用的 python（装了 edge-tts 的那个解释器）
+      python: asString(sayInput.python),
+      pitch: asInt(sayInput.pitch, 0, -200, 200),
+      rate: asInt(sayInput.rate, DEFAULT_CONFIG.say.rate, -10, 10),
+      volume: asInt(sayInput.volume, DEFAULT_CONFIG.say.volume, 0, 100),
+      maxChars: asInt(sayInput.maxChars, DEFAULT_CONFIG.say.maxChars, 20, 5000),
+      postVoice: sayInput.postVoice === true,
+      postVoiceModel: asString(sayInput.postVoiceModel),
+      timeoutMs: asInt(sayInput.timeoutMs, DEFAULT_CONFIG.say.timeoutMs, 5000, 300000)
     },
     transcode: ['auto', 'never'].includes(asString(input.transcode)) ? asString(input.transcode) : DEFAULT_CONFIG.transcode,
     maxSeconds: asInt(input.maxSeconds, DEFAULT_CONFIG.maxSeconds, 5, 600),

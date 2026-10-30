@@ -1,6 +1,17 @@
 # 排错
 
-## 群里报 `OneBot upload_group_file 失败: retcode=100 ENOENT ... realpath '…/plugin-data/sing/media/sing-xxxx.mp3'`
+## ## 宿主报 `HTTP 524`（唱歌/说话时）
+
+Cloudflare **快速隧道**对源站响应时间有约 100 秒限制，唱歌（尤其整首）必然越线 → 524。
+换成本机专线即可：
+
+```bash
+bash /opt/qq-agent/set-tts-url.sh https://127.0.0.1:8898/v1
+```
+
+（专线的搭建见 [TUNNEL.md](TUNNEL.md) 的「备用专线」。插件的 gatewayUrl 不受影响。）
+
+群里报 `OneBot upload_group_file 失败: retcode=100 ENOENT ... realpath '…/plugin-data/sing/media/sing-xxxx.mp3'`
 
 **一句话**：文件在服务器上是好的，但 OneBot 看不到那个路径 —— 你的 OneBot（SnowLuma）跑在
 Docker 容器里，容器只挂了 `snowluma/data`，而插件的媒体文件写在 `qq-agent/data/plugin-data/`。

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import re
 import shutil
@@ -429,14 +430,180 @@ def convert_segments_batch(segments: list[Path], work_dir: Path, *, total: int, 
     return parts
 
 
+# ── 常驻模式 ──────────────────────────────────────────────────────
+# 网关用 `run.py --serve` 起一个长驻进程，通过 stdin/stdout 的 NDJSON 通信：
+#   请求  {"id":1,"input":"..","output":"..","voice":"hanser","pitch":0,
+#          "maxSeconds":0,"segmentSeconds":30,"indexRate":0.75,"noSeparate":false}
+#   进度  {"id":1,"event":"seg","done":2,"total":8}
+#   结果  {"id":1,"ok":true,"seconds":12.3,"bytes":123456} / {"id":1,"ok":false,"error":".."}
+#
+# 为什么值得：模型加载一次要 8-12 秒。每次请求都重启进程的话，
+# 说一句话 14 秒里有 12 秒是在重复加载 —— 常驻后每句只花 2-3 秒。
+# 同一份 VC 实例按音色缓存，切音色才重新 get_vc()。
+
+_RVC_CTX = {"vc": None, "voice": None, "config": None}
+
+
+def _rvc_call(req: dict, seg_files: list[Path], out_dir: Path, emit) -> list[Path]:
+    """用进程内 VC 逐段换声，返回产物列表（顺序与 seg_files 一致）。"""
+    sys.path.insert(0, str(RVC_DIR))
+    os.chdir(RVC_DIR)                      # RVC 内部有相对路径依赖
+    os.environ.setdefault("rmvpe_root", str(ASSETS / "rmvpe"))
+    import soundfile as sf
+    import torch
+
+    pth, index = find_model(req.get("voice") or "me")
+    voice_key = str(pth)
+    gpu_fraction = req.get("gpuFraction")
+    if gpu_fraction and 0 < float(gpu_fraction) < 1 and _RVC_CTX["vc"] is None:
+        torch.cuda.set_per_process_memory_fraction(float(gpu_fraction), 0)
+
+    if _RVC_CTX["vc"] is None or _RVC_CTX["voice"] != voice_key:
+        from configs.config import Config
+        from infer.vc.modules import VC
+
+        original_argv = sys.argv[:]
+        sys.argv = [sys.argv[0]]
+        try:
+            config = Config()
+        finally:
+            sys.argv = original_argv
+        vc = VC(config)
+        # get_vc 只认「相对 weight_root 的文件名」：cli.py 也是先设这个环境变量再传裸文件名
+        os.environ["weight_root"] = str(pth.parent)
+        vc.get_vc(pth.name)
+        _RVC_CTX.update({"vc": vc, "voice": voice_key, "config": config})
+        log(f"[serve] 模型已加载：{pth.name}" + (f" + {index.name}" if index else ""))
+
+    vc = _RVC_CTX["vc"]
+    index_path = str(index) if index is not None else ""
+    index_rate = float(req.get("indexRate") or 0.75)
+    f0_method = "rmvpe" if (ASSETS / "rmvpe" / "rmvpe.pt").exists() else "pm"
+    speaker_id = 0
+
+    produced: list[Path] = []
+    total = len(seg_files)
+    for i, seg in enumerate(seg_files, 1):
+        status, result = vc.vc_single(
+            speaker_id, str(seg), int(req.get("pitch") or 0), f0_method,
+            index_path, index_rate, 0, 1.0, 0.33)
+        if not result or result[0] is None or result[1] is None:
+            raise RuntimeError(f"第 {i}/{total} 段换声没有产出：{status}")
+        target = out_dir / f"conv-{i:03d}.wav"
+        sf.write(str(target), result[1], result[0])
+        produced.append(target)
+        if emit:
+            emit({"event": "seg", "done": i, "total": total})
+        log(f"[seg] {i}/{total} 完成（常驻）")
+    return produced
+
+
+def handle_request(req: dict, emit) -> dict:
+    """跑一条完整的换声请求（供 --serve 用）。失败抛异常，由调用方回 ok:false。"""
+    src = Path(req["input"]).resolve()
+    out = Path(req["output"]).resolve()
+    if not src.exists():
+        raise RuntimeError(f"输入文件不存在：{src}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    max_seconds = int(req.get("maxSeconds") or 0)
+    segment_seconds = int(req.get("segmentSeconds") or 0)
+
+    with tempfile.TemporaryDirectory(prefix="sing-serve-") as tmp:
+        tmp_dir = Path(tmp)
+        src_use = trim(src, max_seconds, tmp_dir) if max_seconds > 0 else src
+        vocal_src = src_use
+        inst_path: Path | None = None
+
+        if not req.get("noSeparate"):
+            try:
+                vocal_src, inst_path = separate(src_use, tmp_dir, req.get("sepModel"),
+                                                req.get("gpuFraction"))
+                log(f"分离完成：人声 {vocal_src.name}，伴奏 {'有' if inst_path else '无'}")
+            except Exception as exc:
+                log(f"分离没成功（{exc}），直接对原音频换声")
+                vocal_src, inst_path = src_use, None
+
+        if max_seconds > 0:
+            vocal_src = trim(vocal_src, max_seconds, tmp_dir)
+            if inst_path is not None:
+                inst_path = trim(inst_path, max_seconds, tmp_dir)
+
+        vocal_len = duration_seconds(vocal_src)
+        threshold = segment_seconds + 5
+        need_segments = segment_seconds > 0 and (
+            max_seconds == 0 or vocal_len <= 0 or vocal_len > threshold)
+
+        if need_segments:
+            segs = slice_audio(vocal_src, tmp_dir / "seg", segment_seconds)
+            log(f"[seg] 人声 {vocal_len:.0f} 秒 → {len(segs)} 段（常驻进程，模型不重载）")
+        else:
+            segs = [vocal_src]
+
+        conv_dir = tmp_dir / "conv"
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        parts = _rvc_call(req, segs, conv_dir, emit)
+        converted = tmp_dir / "converted.wav"
+        concat_audio(parts, converted)
+        mix(converted, inst_path if req.get("keepInst", True) else None, out)
+
+    if not out.exists() or out.stat().st_size == 0:
+        raise RuntimeError("最终输出为空")
+    return {"seconds": round(duration_seconds(out) or 0, 2), "bytes": out.stat().st_size}
+
+
+def serve() -> int:
+    """常驻模式主循环：读 stdin 的 NDJSON，结果写 stdout。"""
+    log("[serve] 常驻换声进程已启动（模型按音色缓存，空闲由网关关掉）")
+
+    def emit(payload: dict) -> None:
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except Exception as exc:
+            emit({"id": None, "ok": False, "error": f"请求不是合法 JSON：{exc}"})
+            continue
+        if req.get("cmd") == "ping":
+            emit({"id": req.get("id"), "ok": True, "pong": True})
+            continue
+        if req.get("cmd") == "shutdown":
+            emit({"id": req.get("id"), "ok": True})
+            return 0
+        rid = req.get("id")
+        try:
+            result = handle_request(req, lambda payload: emit({"id": rid, **payload}))
+            emit({"id": rid, "ok": True, **result})
+        except Exception as exc:
+            log(f"[serve] 请求失败：{exc}")
+            emit({"id": rid, "ok": False, "error": str(exc)[:400]})
+        finally:
+            # 每个请求结束后把显存还回去：分离模型是另一个进程，
+            # 它的显存会释放，但常驻进程的 torch 缓存不会自动还（实测空转后仍占 9G）。
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="RVC 换声：输入音频 -> 目标音色")
-    ap.add_argument("--input", required=True, help="输入音频（wav/m4a/mp3 都行）")
-    ap.add_argument("--output", required=True, help="输出音频路径")
+    ap.add_argument("--input", help="输入音频（wav/m4a/mp3 都行）")
+    ap.add_argument("--output", help="输出音频路径")
     ap.add_argument("--voice", default="me", help="音色名（对应 assets/weights/<名字>.pth）")
     ap.add_argument("--pitch", type=int, default=0, help="变调半音（男→女常 +12，女→男 -12）")
     ap.add_argument("--index-rate", type=float, default=0.75, help="index 相似度混合比例")
     ap.add_argument("--max-seconds", type=int, default=0, help="只唱前 N 秒（0=整段）")
+    ap.add_argument("--serve", action="store_true",
+                    help="常驻模式：从 stdin 读 NDJSON 请求，模型只加载一次")
     ap.add_argument("--segment-seconds", type=int, default=75,
                     help="长音频按这个长度切段分别换声（默认 75 秒；0=不分段）")
     ap.add_argument("--segment-retries", type=int, default=1,
@@ -450,6 +617,12 @@ def main() -> int:
     ap.add_argument("--no-instrumental", dest="keep_inst", action="store_false",
                     help="只要清唱（不混伴奏）")
     args = ap.parse_args()
+
+    if args.serve:
+        return serve()
+
+    if not args.input or not args.output:
+        fail("普通模式要 --input 与 --output；常驻模式请加 --serve")
 
     src = Path(args.input).resolve()
     if not src.exists():

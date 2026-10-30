@@ -12,9 +12,16 @@
 **免鉴权**（方便排查隧道通不通），只暴露"在不在、什么引擎"：
 
 ```json
-{ "ok": true, "version": "0.1.0", "engine": "command", "voices": ["me"],
-  "source": "itunes", "transcode": "auto", "jobs": 0 }
+{ "ok": true, "version": "1.0.2",
+  "engine": "command", "say": "windows", "voiceConfigured": true, "voices": ["hanser"],
+  "source": "netease", "transcode": "auto", "jobs": 0,
+  "voiceSeconds": 0, "voiceFullSong": true, "voiceMaxSeconds": 600, "jobMaxSeconds": 600 }
 ```
+
+- `engine` / `voices` —— 换声引擎与可用音色（`engine: "none"` 表示没接换声，只能搬运音源）
+- `say` —— 说话引擎（`windows` = 系统自带语音；`none` = 关掉）
+- `voiceSeconds` —— 语音条当前生效时长（`0` + `voiceFullSong: true` = 整首）
+- `voiceMaxSeconds` / `jobMaxSeconds` —— 两道上限，插件推的值会被它们夹住
 
 ## GET /search?q=<关键词>&limit=5
 
@@ -63,6 +70,31 @@
 
 - 文件保留 `filesTtlHours` 小时（默认 24），过期的会被网关自己清掉；
 - 生命周期：插件下载完就可以删了，网关不依赖"插件一定来下载"。
+
+## POST /v1/audio/speech
+
+**给宿主用的**（不是给插件用的）：宿主的 `send_voice` 工具把文字发过来，要一段音频字节。
+所以这个端点同时承担两件事：
+
+| 输入 | 行为 | 响应 |
+|---|---|---|
+| 含点歌意图（`唱：歌名`、`点歌唱…`、句中触发） | 走换声流水线（同步等成品，整首会自动分段） | 音频字节 + `x-audio-seconds` |
+| 其它文本 | 走 `say` 引擎（Windows 自带语音） | 音频字节 + `x-audio-seconds` |
+
+```http
+POST /v1/audio/speech
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "input": "唱：夜曲", "voice": "hanser", "maxSeconds": 0 }
+```
+
+响应头里的 `x-audio-seconds` 是**真实时长**：宿主默认是按字数估（4 字 → 1 秒），
+拿到这个头就会显示真实值（否则 90 秒的翻唱会被说成"才一秒"）。
+
+**请求是同步的**（几十秒起步）：别把它放在 100 秒就掐的通道后面（Cloudflare 快速隧道会回 524），语音条应走本机专线或 named tunnel（见 docs/TUNNEL.md）。
+
+失败语义：换声失败 → 500 + 人能读的原因；`say.engine = none` 且不是点歌 → 400（宿主会退回文字）。
 
 ## 为什么要异步
 
