@@ -1,0 +1,31 @@
+name: ci
+
+# 每次 push / PR 都跑：清单校验 + 单元测试。
+# 发布前的"这堆代码还能不能用"就靠它，别等到发版才发现。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 清单基本校验
+        run: node scripts/check-manifest.mjs plugin/sing
+
+      - name: 单元测试
+        run: |
+          node --test \
+            test/plugin-lib.test.mjs \
+            test/gateway-jobs.test.mjs \
+            test/gateway-app.test.mjs \
+            test/plugin-protocol.test.mjs

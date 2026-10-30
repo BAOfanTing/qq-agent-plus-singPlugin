@@ -4,6 +4,13 @@
 
 <h1 align="center">qq-agent-plus-singPlugin</h1>
 
+<p align="center">
+  <a href="https://github.com/BAOfanTing/qq-agent-plus-singPlugin/actions/workflows/ci.yml"><img src="https://github.com/BAOfanTing/qq-agent-plus-singPlugin/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="https://github.com/BAOfanTing/qq-agent-plus-singPlugin/releases"><img src="https://github.com/BAOfanTing/qq-agent-plus-singPlugin/releases/badge.svg" alt="release"></a>
+  <img src="https://img.shields.io/badge/node-%E9%9B%B6%E4%BE%9D%E8%B5%96-brightgreen" alt="zero-dep">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT">
+</p>
+
 <p align="center"><em>点歌 · 换声 · 发语音条 —— 给 qq-agent-plus 的唱歌插件</em></p>
 
 给 [qq-agent-plus](https://github.com/sakurawwwxh/qq-agent-plus) 的**点歌唱歌**插件：

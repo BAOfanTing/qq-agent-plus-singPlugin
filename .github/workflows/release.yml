@@ -1,0 +1,135 @@
+name: release
+
+# 两种触发方式：
+#   ① 推一个 v* 标签（推荐）：git tag v1.0.0 && git push origin v1.0.0
+#   ② 在 Actions 页面点 "Run workflow"（workflow_dispatch），手动填版本号
+#
+# 做的事：用**宿主仓库自己的打包器**打包并真装一次自测，然后建 GitHub Release 挂上包。
+# 为什么不用自己写的 tar：宿主的 plugin-pack.mjs 会调它自己的安装器在临时目录里装一遍，
+# 装不上的包根本进不了产物 —— 这一步是发布前唯一的硬验证。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（例如 1.0.0，不带 v）'
+        required: true
+        default: '1.0.0'
+      tag:
+        description: '要创建的标签（留空则用 v<version>）'
+        required: false
+        default: ''
+      prerelease:
+        description: '标成预发布'
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  HOST_REPO: https://github.com/sakurawwwxh/qq-agent-plus
+  PLUGIN_DIR: plugin/sing
+  AUTHOR: BAofanTing
+  MIN_VERSION: '0.9.10'
+  TAGS: '点歌,唱歌,语音'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write        # 建 Release / 传附件需要
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 版本号
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+            TAG="${{ inputs.tag }}"
+            [ -n "$TAG" ] || TAG="v$VERSION"
+          else
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "版本：$VERSION 标签：$TAG"
+
+      - name: 清单校验
+        run: node scripts/check-manifest.mjs "$PLUGIN_DIR"
+
+      - name: 单元测试
+        run: |
+          node --test \
+            test/plugin-lib.test.mjs \
+            test/gateway-jobs.test.mjs \
+            test/gateway-app.test.mjs \
+            test/plugin-protocol.test.mjs
+
+      - name: 拉宿主打包器
+        run: |
+          git clone --depth 1 "$HOST_REPO" /tmp/host
+          test -f /tmp/host/scripts/plugin-pack.mjs
+
+      - name: 打包 + 真装自测
+        id: pack
+        run: |
+          node /tmp/host/scripts/plugin-pack.mjs "$PLUGIN_DIR" \
+            --out dist \
+            --author "$AUTHOR" \
+            --homepage "${{ github.server_url }}/${{ github.repository }}" \
+            --tag "${{ steps.v.outputs.tag }}" \
+            --min-version "$MIN_VERSION" \
+            --tags "$TAGS" \
+            --json > dist/pack.json
+          cat dist/pack.json
+          FILE=$(ls dist/*.tar.gz | head -n1)
+          SHA=$(sha256sum "$FILE" | cut -d' ' -f1)
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: 生成索引条目
+        run: |
+          node -e '
+            const fs = require("fs");
+            const pack = JSON.parse(fs.readFileSync("dist/pack.json", "utf8"));
+            const entry = (pack.indexEntry || pack.entry || pack);
+            const out = { ...entry, sha256: process.env.SHA, downloadUrl: process.env.URL };
+            fs.writeFileSync("dist/index-entry.json", JSON.stringify(out, null, 2) + "\n");
+          ' || echo '（宿主输出结构变了，跳过自动生成，README 手写即可）'
+        env:
+          SHA: ${{ steps.pack.outputs.sha256 }}
+          URL: ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.v.outputs.tag }}/sing-${{ steps.v.outputs.version }}.tar.gz
+
+      - name: 建 Release 并上传包
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.v.outputs.tag }}
+          name: v${{ steps.v.outputs.version }}
+          prerelease: ${{ inputs.prerelease || false }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/index-entry.json
+          body: |
+            ## 安装
+
+            控制台 → 插件 → 从本地安装，选附件里的 `sing-${{ steps.v.outputs.version }}.tar.gz`。
+
+            ## 校验
+
+            ```
+            sha256: ${{ steps.pack.outputs.sha256 }}
+            ```
+
+            > 本插件需要在你自己的电脑上跑换声网关（`gateway/` + `sing-model/`）；服务器只做转发。
+            > 详见仓库 README。
