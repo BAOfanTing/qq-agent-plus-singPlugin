@@ -372,7 +372,7 @@ sudo bash scripts/bridge-container-paths.sh
 ## 12. 开机自启（Windows）
 
 ```powershell
-schtasks /create /tn "SingGateway" /tr "powershell -NoProfile -ExecutionPolicy Bypass -File E:\path\to\SingPlugin\scripts\run-gateway-forever.ps1" /sc onlogon /rl highest
+schtasks /create /tn "SingGateway" /tr "powershell -NoProfile -ExecutionPolicy Bypass -File E:\path\to\qq-agent-plus-SingPlugin\scripts\run-gateway-forever.ps1" /sc onlogon /rl highest
 schtasks /create /tn "SingTunnel"  /tr "E:\Cache\qq-agent\tools\cloudflared.exe tunnel --url http://127.0.0.1:8899 --no-autoupdate" /sc onlogon /rl highest
 ```
 

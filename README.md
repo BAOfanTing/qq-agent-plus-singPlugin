@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/icon.png" width="120" height="120" alt="qq-agent-plus-SingPlugin">
+  <img src="assets/icon.png" width="120" height="120" alt="qq-agent-plus-singPlugin">
 </p>
 
-<h1 align="center">qq-agent-plus-SingPlugin</h1>
+<h1 align="center">qq-agent-plus-singPlugin</h1>
 
 <p align="center"><em>点歌 · 换声 · 发语音条 —— 给 qq-agent-plus 的唱歌插件</em></p>
 
@@ -12,7 +12,9 @@
 > ⚠️ **前提**：换声模型（RVC）和网关都跑在**你自己的电脑**上（本仓库的 `gateway/` 与 `sing-model/`）。
 > 服务器只做转发、不装模型；电脑没开时机器人只会提示「后端离线」。
 
-![image-20261029231050894](https://gitee.com/baofanting/image/raw/master/image/20261029231050950.png)
+![image-20261030100547632](https://gitee.com/baofanting/image/raw/master/image/20261030100547692.png)
+
+![image-20261030100609669](https://gitee.com/baofanting/image/raw/master/image/20261030100609713.png)
 
 ## 它怎么工作
 

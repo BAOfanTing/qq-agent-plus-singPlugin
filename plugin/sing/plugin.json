@@ -3,11 +3,11 @@
   "apiVersion": 2,
   "name": "点歌唱歌",
   "version": "1.0.0",
-  "description": "点歌唱歌：群里说「用语音唱一首X」，机器人用你训练好的音色翻唱并发语音条。⚠️ 需要先在本机部署并运行 qq-agent-plus-SingPlugin（含 RVC 换声模型与本地网关），这台服务器只做转发、不跑模型；本机没开时只会提示后端离线。",
+  "description": "点歌唱歌：群里说「用语音唱一首X」，机器人用你训练好的音色翻唱并发语音条。⚠️ 需要先在本机部署并运行 qq-agent-plus-singPlugin（含 RVC 换声模型与本地网关），这台服务器只做转发、不跑模型；本机没开时只会提示后端离线。",
+  "author": "BAofanTing",
+  "homepage": "https://github.com/BAOfanTing/qq-agent-plus-singPlugin",
+  "license": "MIT",
   "entry": "index.mjs",
-  "engines": {
-    "minVersion": "0.9.10"
-  },
   "capabilities": [
     "tools",
     "schedule",
@@ -18,13 +18,99 @@
     "media",
     "send"
   ],
-  "schedule": [
-    {
-      "name": "daily_prune",
-      "everyMs": 3600000
-    }
-  ],
-  "httpMaxBytes": 131072,
+  "engines": {
+    "minVersion": "0.9.10"
+  },
+  "settings": {
+    "groups": [
+      {
+        "key": "neteaseLogin",
+        "title": "网易云登录",
+        "description": "点本页下方「扫码登录」按钮，用手机网易云 App 扫码（二维码由本插件本地生成，不上传任何数据）；也可以直接打开 <网关地址>/login?token=<网关令牌> 扫码。⚠️ 面板标题里出现的「B 站」是宿主界面的固定文案，不影响登录。",
+        "fields": []
+      },
+      {
+        "key": "gateway",
+        "title": "点歌后端",
+        "description": "后端跑在你自己电脑上（gateway/ 目录），用隧道暴露成 https 域名后把地址填这里。",
+        "fields": [
+          {
+            "key": "gatewayUrl",
+            "label": "网关地址",
+            "type": "text",
+            "default": "",
+            "help": "形如 https://sing.example.com 或 https://xxxx.trycloudflare.com（不要带结尾斜杠）"
+          },
+          {
+            "key": "gatewayUrlFallback",
+            "label": "备用网关地址",
+            "type": "text",
+            "default": "",
+            "help": "主地址连不上时自动再试这个（例如服务器专线 https://<你的IP>:8898）。留空表示不启用"
+          },
+          {
+            "key": "apiToken",
+            "label": "网关令牌",
+            "type": "secret",
+            "help": "与网关 config.json 里的 token 一致；留空表示网关没开鉴权（不推荐）"
+          },
+          {
+            "key": "defaultVoice",
+            "label": "默认音色",
+            "type": "text",
+            "default": "",
+            "help": "网关配置里的音色名（比如 me）；留空表示用网关的默认值"
+          },
+          {
+            "key": "allowFileOutput",
+            "label": "允许发群文件（默认关）",
+            "type": "boolean",
+            "default": false,
+            "help": "关闭时只用语音条（宿主 send_voice 通道）；开启后模型才会用群文件发 mp3。关着时点歌工具会提示改用语音。"
+          },
+          {
+            "key": "voiceSeconds",
+            "label": "语音条唱多久（秒）",
+            "type": "number",
+            "default": 120,
+            "min": 5,
+            "max": 120,
+            "help": "默认 120 秒。实测 90 秒最稳（约 25-30 秒出结果）；超过 ~150 秒 RVC 在长音频上会卡死（GPU 100% 不返回），所以上限锁 180。要整首请分数次点歌。"
+          },
+          {
+            "key": "maxSeconds",
+            "label": "群文件唱多久（秒）",
+            "type": "number",
+            "default": 60,
+            "min": 5,
+            "max": 120,
+            "help": "只在打开「允许发群文件」时生效；受插件工具 180 秒超时限制。"
+          }
+        ]
+      },
+      {
+        "key": "advanced",
+        "title": "高级",
+        "fields": [
+          {
+            "key": "pollIntervalMs",
+            "label": "任务轮询间隔（毫秒）",
+            "type": "number",
+            "default": 2000,
+            "min": 1000,
+            "max": 10000
+          },
+          {
+            "key": "allowInsecureHttp",
+            "label": "允许 http 网关",
+            "type": "boolean",
+            "default": false,
+            "help": "仅用于调试。宿主禁止插件访问内网地址，本机网关必须用 https 隧道暴露"
+          }
+        ]
+      }
+    ]
+  },
   "tools": [
     {
       "name": "login",
@@ -118,94 +204,11 @@
       }
     }
   ],
-  "settings": {
-    "groups": [
-      {
-        "key": "neteaseLogin",
-        "title": "网易云登录",
-        "description": "点本页下方「扫码登录」按钮，用手机网易云 App 扫码（二维码由本插件本地生成，不上传任何数据）；也可以直接打开 <网关地址>/login?token=<网关令牌> 扫码。⚠️ 面板标题里出现的「B 站」是宿主界面的固定文案，不影响登录。",
-        "fields": []
-      },
-      {
-        "key": "gateway",
-        "title": "点歌后端",
-        "description": "后端跑在你自己电脑上（gateway/ 目录），用隧道暴露成 https 域名后把地址填这里。",
-        "fields": [
-          {
-            "key": "gatewayUrl",
-            "label": "网关地址",
-            "type": "text",
-            "default": "",
-            "help": "形如 https://sing.example.com 或 https://xxxx.trycloudflare.com（不要带结尾斜杠）"
-          },
-          {
-            "key": "gatewayUrlFallback",
-            "label": "备用网关地址",
-            "type": "text",
-            "default": "",
-            "help": "主地址连不上时自动再试这个（例如服务器专线 https://<你的IP>:8898）。留空表示不启用"
-          },
-          {
-            "key": "apiToken",
-            "label": "网关令牌",
-            "type": "secret",
-            "help": "与网关 config.json 里的 token 一致；留空表示网关没开鉴权（不推荐）"
-          },
-          {
-            "key": "defaultVoice",
-            "label": "默认音色",
-            "type": "text",
-            "default": "",
-            "help": "网关配置里的音色名（比如 me）；留空表示用网关的默认值"
-          },
-          {
-            "key": "allowFileOutput",
-            "label": "允许发群文件（默认关）",
-            "type": "boolean",
-            "default": false,
-            "help": "关闭时只用语音条（宿主 send_voice 通道）；开启后模型才会用群文件发 mp3。关着时点歌工具会提示改用语音。"
-          },
-          {
-            "key": "voiceSeconds",
-            "label": "语音条唱多久（秒）",
-            "type": "number",
-            "default": 120,
-            "min": 5,
-            "max": 120,
-            "help": "默认 120 秒。实测 90 秒最稳（约 25-30 秒出结果）；超过 ~150 秒 RVC 在长音频上会卡死（GPU 100% 不返回），所以上限锁 180。要整首请分数次点歌。"
-          },
-          {
-            "key": "maxSeconds",
-            "label": "群文件唱多久（秒）",
-            "type": "number",
-            "default": 60,
-            "min": 5,
-            "max": 120,
-            "help": "只在打开「允许发群文件」时生效；受插件工具 180 秒超时限制。"
-          }
-        ]
-      },
-      {
-        "key": "advanced",
-        "title": "高级",
-        "fields": [
-          {
-            "key": "pollIntervalMs",
-            "label": "任务轮询间隔（毫秒）",
-            "type": "number",
-            "default": 2000,
-            "min": 1000,
-            "max": 10000
-          },
-          {
-            "key": "allowInsecureHttp",
-            "label": "允许 http 网关",
-            "type": "boolean",
-            "default": false,
-            "help": "仅用于调试。宿主禁止插件访问内网地址，本机网关必须用 https 隧道暴露"
-          }
-        ]
-      }
-    ]
-  }
+  "schedule": [
+    {
+      "name": "daily_prune",
+      "everyMs": 3600000
+    }
+  ],
+  "httpMaxBytes": 131072
 }

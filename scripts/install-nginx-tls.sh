@@ -43,7 +43,7 @@ openssl x509 -in server.crt -noout -text | grep -A1 'Subject Alternative Name' |
 
 echo "=== 写 nginx 站点（8898 TLS → ssh 反向隧道的 127.0.0.1:8899）==="
 cat > /etc/nginx/conf.d/sing-gateway.conf <<EEOF
-# SingPlugin 换声网关的 TLS 反代。
+# singPlugin 换声网关的 TLS 反代。
 # 链路：你的电脑 --ssh -R--> 本机 127.0.0.1:8899 --> 本文件 --> QQ Agent 宿主
 # 自签 CA + Bearer 令牌；宿主侧用 NODE_EXTRA_CA_CERTS 信任 ${TLS}/ca.crt。
 server {
