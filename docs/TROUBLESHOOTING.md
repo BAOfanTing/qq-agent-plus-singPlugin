@@ -40,7 +40,7 @@ docker exec qq-agent-snowluma ls /opt/qq-agent/data/plugin-data/sing/media/
 
 ## 点歌很慢（> 2 分钟）或插件超时
 
-- 检查 `maxSeconds`：`run.py` 会先裁剪再换声，4 分钟整首歌进 GPU 会跑 4 分钟；
+- 检查 `maxSeconds`：`run.py` 会先裁剪再换声；整首会按 30 秒分段处理（整批只加载一次模型，失败只补跑缺的段），
 - 检查是不是有旧任务还占着 GPU：`nvidia-smi`，必要时结束残留的 `python -m infer.cli`；
 - 网关是串行的，第二个点歌会排队（这是故意的，换声并发只会互相拖慢）。
 

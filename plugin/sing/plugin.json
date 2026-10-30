@@ -2,7 +2,7 @@
   "id": "sing",
   "apiVersion": 2,
   "name": "点歌唱歌",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "点歌唱歌：群里说「用语音唱一首X」，机器人用你训练好的音色翻唱并发语音条。⚠️ 需要先在本机部署并运行 qq-agent-plus-singPlugin（含 RVC 换声模型与本地网关），这台服务器只做转发、不跑模型；本机没开时只会提示后端离线。",
   "author": "BAofanTing",
   "homepage": "https://github.com/BAOfanTing/qq-agent-plus-singPlugin",
@@ -70,12 +70,12 @@
           },
           {
             "key": "voiceSeconds",
-            "label": "语音条唱多久（秒）",
+            "label": "语音条唱多久（秒，0 = 整首）",
             "type": "number",
-            "default": 120,
-            "min": 5,
-            "max": 120,
-            "help": "默认 120 秒。实测 90 秒最稳（约 25-30 秒出结果）；超过 ~150 秒 RVC 在长音频上会卡死（GPU 100% 不返回），所以上限锁 180。要整首请分数次点歌。"
+            "default": 0,
+            "min": 0,
+            "max": 600,
+            "help": "填 0 唱完整首（网关按 75 秒一段分别换声再拼回去，4 分钟的歌约 2-3 分钟出结果）；也可以填 5-600 的秒数。改完插件自动同步给网关，重启也保留。"
           },
           {
             "key": "maxSeconds",
@@ -145,8 +145,8 @@
     },
     {
       "name": "sing_song",
-      "description": "点歌并把翻唱结果作为【群文件】发到当前群（几十秒，可下载）。⚠️ 默认关闭：设置里「允许发群文件」未开时本工具会直接拒绝。平时请用 send_voice 并把输入写成「唱：歌名」，那条路发的是 QQ 语音条。",
-      "timeoutMs": 180000,
+      "description": "点歌并把翻唱结果作为【群文件】发到当前群。⚠️ 默认关闭：设置里「允许发群文件」未开时本工具会直接拒绝。平时请用 send_voice 并把输入写成「唱：歌名」，那条路发的是 QQ 语音条。",
+      "timeoutMs": 300000,
       "parameters": {
         "type": "object",
         "properties": {

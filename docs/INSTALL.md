@@ -216,7 +216,8 @@ cp config.example.json config.json
 | `transcode` | `auto`（有 ffmpeg 就转 mp3 并裁剪）/ `never` |
 | `maxSeconds` | 群文件通道最长时间（默认 150 秒） |
 | `voiceMessageMaxSeconds` | 语音条通道硬上限，默认 300 秒（插件推上来的值会被它夹紧） |
-| `voiceMessageDefaultSeconds` | 语音条默认时长，默认 180 秒（插件没推值时用它；宿主调 `/audio/speech` 不带时长） |
+| `voiceMessageDefaultSeconds` | 语音条默认时长，默认 90 秒（插件没推值时用它；0 = 整首由插件设置决定） |
+| `voice.segmentSeconds` | 长音频切段长度，默认 **30** 秒（整批只加载一次模型；设 0 = 不分段） |
 | `filesTtlHours` | 成品保留小时数（默认 24，另有每天 0 点清理） |
 
 本机这套的实际配置（供对照）：
@@ -318,7 +319,7 @@ curl -X POST http://127.0.0.1:3210/api/plugins/settings \
 | API Key | 网关令牌 |
 | 语速 / 增益 | 1 / 0 |
 
-再加一条配置（界面没有，直接写 config）：**超时调到 180 秒**，否则长歌会在宿主侧先超时。
+再加一条配置（界面没有，直接写 config）：**超时调到 600000（10 分钟）**，否则整首歌会在宿主侧先超时。
 
 ```bash
 curl -X POST http://127.0.0.1:3210/api/config \

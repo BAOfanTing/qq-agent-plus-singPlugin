@@ -19,6 +19,7 @@ function fillCommand(template, values) {
   // {maxSeconds} 是数字（不加引号），其余是路径/名字（加引号）
   return String(template)
     .replace(/\{maxSeconds\}/g, () => String(values.maxSeconds ?? 0))
+    .replace(/\{segmentSeconds\}/g, () => String(values.segmentSeconds ?? 0))
     .replace(/\{(input|output|pitch|voice)\}/g, (_, key) => quote(values[key] ?? ''));
 }
 
@@ -42,13 +43,14 @@ export function createVoiceEngine(config) {
   return {
     name: 'command',
     voices: [config.voice.defaultVoice].filter(Boolean),
-    convert({ input, output, voice, maxSeconds = 0 }) {
+    convert({ input, output, voice, maxSeconds = 0, onProgress = null }) {
       const values = {
         input,
         output,
         pitch: String(config.voice.pitch),
         voice: voice || config.voice.defaultVoice,
-        maxSeconds: String(Math.max(0, Math.floor(Number(maxSeconds) || 0)))
+        maxSeconds: String(Math.max(0, Math.floor(Number(maxSeconds) || 0))),
+        segmentSeconds: String(Math.max(0, Math.floor(Number(config.voice.segmentSeconds ?? 75) || 0)))
       };
       const command = fillCommand(config.voice.command, values);
       const timeoutMs = config.voice.timeoutMs;
@@ -70,7 +72,21 @@ export function createVoiceEngine(config) {
           child.kill('SIGKILL');
           reject(Object.assign(new Error(`换声命令超时（${Math.round(timeoutMs / 1000)} 秒）`), { code: 'E_TIMEOUT' }));
         }, timeoutMs);
-        child.stderr?.on('data', (chunk) => { stderr += chunk.toString('utf8').slice(-6000); });
+        child.stderr?.on('data', (chunk) => {
+          const text = chunk.toString('utf8');
+          stderr += text.slice(-6000);
+          // run.py 分段换声时会打印 [seg] 2/4 完成 —— 顺手转成进度，
+          // 这样群里/控制台能看到正在唱第 2 段，而不是干等几分钟。
+          if (typeof onProgress === 'function') {
+            for (const line of text.split(/\r?\n/)) {
+              const m = /\[seg\]\s*(\d+)\/(\d+)(.*)$/.exec(line.trim());
+              if (m) {
+                try { onProgress({ done: Number(m[1]), total: Number(m[2]), note: String(m[3] || '').trim() }); }
+                catch { /* 进度回调出错不能影响换声 */ }
+              }
+            }
+          }
+        });
         child.stdout?.on('data', () => {});
         child.on('error', (error) => {
           clearTimeout(timer);

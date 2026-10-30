@@ -10,6 +10,9 @@
   3) 混回伴奏（有伴奏轨时）：换声后的人声 + 原伴奏
   4) 输出到 --output
 
+长音频（整首 / 超过"一段 + 20 秒"）会自动切成 --segment-seconds 长的段，
+逐段换声再拼回去：每段都在显存安全区，片段独立超时、失败只重跑那一段。
+
 任何一步失败都按"没做成"退出（非 0 + 一行原因），不产出半成品。
 """
 
@@ -18,10 +21,12 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -143,7 +148,13 @@ def _kill_tree(pid: int) -> None:
         pass
 
 
-def run(cmd: list[str], what: str, timeout: int = 1800, gpu_fraction: float | None = None) -> None:
+def run(cmd: list[str], what: str, timeout: int = 1800, gpu_fraction: float | None = None,
+        soft: bool = False, on_line=None) -> None:
+    """跑一条子命令。
+
+    soft=True 时失败抛 RuntimeError（分段重试要用），否则直接退出。
+    on_line 给定时逐行回调（用来把 infer.cli 的每段完成信息转成进度）。
+    """
     log(f"{what}：{' '.join(str(c) for c in cmd[:6])} ...")
     env = os.environ.copy()
     # 显存闸：把 gpu_cap 目录塞进 PYTHONPATH，子进程启动时会自动套用上限
@@ -162,17 +173,41 @@ def run(cmd: list[str], what: str, timeout: int = 1800, gpu_fraction: float | No
         kwargs["start_new_session"] = True
 
     child = subprocess.Popen(cmd, **kwargs)
+
+    def _explode(message: str) -> None:
+        if soft:
+            raise RuntimeError(message)
+        fail(message)
+
     try:
-        out, _ = child.communicate(timeout=timeout)
+        if on_line is None:
+            out, _ = child.communicate(timeout=timeout)
+        else:
+            deadline = time.monotonic() + timeout
+            chunks: list[str] = []
+            assert child.stdout is not None
+            while True:
+                line = child.stdout.readline()
+                if not line:
+                    break
+                chunks.append(line)
+                try:
+                    on_line(line.rstrip("\r\n"))
+                except Exception:      # 回调出错不能影响子进程
+                    pass
+                if time.monotonic() > deadline:
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+            child.wait(timeout=max(1.0, deadline - time.monotonic()))
+            out = "".join(chunks)
     except subprocess.TimeoutExpired:
         _kill_tree(child.pid)          # 连孙进程一起收掉，别留孤儿霸占显卡
         child.kill()
         child.communicate()
-        fail(f"{what}超时（{timeout // 60} 分钟），已终止（含子进程）")
+        _explode(f"{what}超时（{timeout // 60} 分钟），已终止（含子进程）")
     else:
         if child.returncode != 0:
             tail = " ".join((out or "").strip().splitlines()[-3:])
-            fail(f"{what}失败（退出码 {child.returncode}）：{tail[:400]}")
+            _explode(f"{what}失败（退出码 {child.returncode}）：{tail[:400]}")
     log(f"{what}完成")
 
 def separate(src: Path, out_dir: Path, model_name: str | None, gpu_fraction: float | None = None) -> tuple[Path | None, Path | None]:
@@ -234,6 +269,166 @@ def mix(vocal: Path, inst: Path | None, out: Path) -> None:
     )
 
 
+def duration_seconds(path: Path) -> float:
+    """用 ffmpeg -i 输出里的 Duration 行取时长；拿不到就返回 0（调用方按"不知道"处理）。"""
+    exe = ffmpeg_exe()
+    if not exe:
+        return 0.0
+    try:
+        proc = subprocess.run([exe, "-hide_banner", "-i", str(path)],
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=120)
+    except Exception:
+        return 0.0
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", (proc.stderr or "") + (proc.stdout or ""))
+    if not match:
+        return 0.0
+    hours, minutes, seconds = match.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def slice_audio(src: Path, out_dir: Path, segment_seconds: int) -> list[Path]:
+    """按固定长度切片。
+
+    用 ffmpeg 的 segment muxer 一次切完（不是逐段 -ss，那样要解码 N 遍且边界不准）。
+    reset_timestamps 让每段都从 0 开始，RVC 对每段的处理才能等价。
+    """
+    exe = ffmpeg_exe()
+    if not exe:
+        raise RuntimeError("没有 ffmpeg，无法切片")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for old in out_dir.glob("seg-*.wav"):
+        old.unlink(missing_ok=True)
+    run([exe, "-y", "-i", str(src),
+         "-f", "segment", "-segment_time", str(int(segment_seconds)),
+         "-reset_timestamps", "1", "-ac", "1", "-ar", "44100",
+         str(out_dir / "seg-%03d.wav")],
+        "切分人声", timeout=900)
+    files = sorted(out_dir.glob("seg-*.wav"))
+    if not files:
+        raise RuntimeError("切片没有产出任何文件")
+    return files
+
+
+def concat_audio(parts: list[Path], out: Path, sample_rate: int = 40000) -> None:
+    """把换声后的分段拼回一整条。
+
+    用 filter 重编码而不是 concat 拷贝：每段都来自独立的 infer.cli 进程，
+    参数虽然一致，但拷贝模式对个别容器差异很敏感，重编码一次最稳。
+    """
+    if not parts:
+        raise RuntimeError("没有可拼接的分段")
+    if len(parts) == 1:
+        shutil.copyfile(parts[0], out)
+        return
+    exe = ffmpeg_exe()
+    if not exe:
+        raise RuntimeError("没有 ffmpeg，无法拼接")
+    cmd = [exe, "-y"]
+    for part in parts:
+        cmd += ["-i", str(part)]
+    graph = "".join(f"[{i}:a]" for i in range(len(parts))) + f"concat=n={len(parts)}:v=0:a=1[a]"
+    cmd += ["-filter_complex", graph, "-map", "[a]", "-ac", "1", "-ar", str(sample_rate), str(out)]
+    run(cmd, f"拼接 {len(parts)} 段", timeout=1800)
+
+
+def convert_vocal(vocal: Path, out: Path, *, pth: Path, index: Path | None, pitch: int,
+                  f0_method: str, index_rate: float, gpu_fraction: float | None,
+                  what: str = "RVC 换声", soft: bool = False) -> None:
+    """对一条人声做换声。
+
+    RVC 的 CLI 是包内模块（infer/cli.py 里 import infer.*），必须 `-m infer.cli`
+    且在 RVC 根目录下运行（cwd 由 run() 负责）。
+    soft=True 时失败抛 RuntimeError，方便分段逐段重试。
+    """
+    cmd = [sys.executable, "-m", "infer.cli",
+           "--model", str(pth),
+           "--input", str(vocal),
+           "--output", str(out),
+           "--pitch", str(pitch),
+           "--f0-method", f0_method,
+           "--index-rate", str(index_rate),
+           "--format", "wav",
+           "--overwrite"]
+    if index is not None:
+        cmd += ["--index", str(index)]
+    run(cmd, what, gpu_fraction=gpu_fraction, soft=soft)
+    if not out.exists() or out.stat().st_size == 0:
+        message = f"{what}没有产出音频"
+        if soft:
+            raise RuntimeError(message)
+        fail(message)
+
+
+def convert_segments_batch(segments: list[Path], work_dir: Path, *, total: int, retries: int,
+                          on_progress=None, **common) -> list[Path]:
+    """一次加载模型、逐段换声。
+
+    关键点：`infer.cli` 支持 **目录批处理**（collect_jobs），它内部只 get_vc() 一次，
+    然后在同一个进程里循环处理每个文件。之前我们每段起一个进程，等于每段重付一次
+    模型加载（约 8 秒）—— 段越小越亏，20 秒一段比 75 秒一段慢一倍多。
+    批处理整体失败时退回逐段调用，并且只补跑缺产物的那几段。
+    """
+    conv_dir = work_dir / "conv"
+    conv_dir.mkdir(parents=True, exist_ok=True)
+
+    cmd = [sys.executable, "-m", "infer.cli",
+           "--model", str(common["pth"]),
+           "--input", str(segments[0].parent),
+           "--output", str(conv_dir),
+           "--pitch", str(common["pitch"]),
+           "--f0-method", common["f0_method"],
+           "--index-rate", str(common["index_rate"]),
+           "--format", "wav",
+           "--overwrite"]
+    if common["index"] is not None:
+        cmd += ["--index", str(common["index"])]
+
+    seen = 0
+
+    def _on_line(line: str) -> None:
+        nonlocal seen
+        # infer.cli 每处理完一个文件会 print 输出路径；数到 .wav 就算一段完成
+        if line.strip().lower().endswith(".wav"):
+            seen = min(seen + 1, total)
+            log(f"[seg] {seen}/{total} 完成")
+            if on_progress is not None:
+                try:
+                    on_progress(seen)
+                except Exception:
+                    pass
+
+    try:
+        run(cmd, f"换声 {total} 段（模型只加载一次）",
+            gpu_fraction=common["gpu_fraction"], soft=True, on_line=_on_line)
+    except Exception as exc:
+        log(f"批量换声没成（{str(exc)[:140]}），改回逐段处理")
+
+    produced = {path.stem: path for path in conv_dir.glob("*.wav")}
+    parts: list[Path] = []
+    for i, seg in enumerate(segments, 1):
+        if seg.stem in produced:
+            parts.append(produced[seg.stem])
+            continue
+        log(f"[seg] {i}/{total} 没有产物，单独补跑")
+        done = False
+        for attempt in range(retries + 1):
+            try:
+                single = conv_dir / seg.name
+                convert_vocal(seg, single, what=f"换声 {i}/{total}", soft=True, **common)
+                parts.append(single)
+                done = True
+                break
+            except Exception as exc:
+                if attempt < retries:
+                    log(f"[seg] {i}/{total} 失败（{str(exc)[:120]}），重试一次")
+                else:
+                    log(f"[seg] {i}/{total} 重试后仍失败：{str(exc)[:160]}")
+        if not done:
+            fail(f"第 {i}/{total} 段换声失败：整单放弃（不产出半成品）")
+    return parts
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="RVC 换声：输入音频 -> 目标音色")
     ap.add_argument("--input", required=True, help="输入音频（wav/m4a/mp3 都行）")
@@ -242,6 +437,10 @@ def main() -> int:
     ap.add_argument("--pitch", type=int, default=0, help="变调半音（男→女常 +12，女→男 -12）")
     ap.add_argument("--index-rate", type=float, default=0.75, help="index 相似度混合比例")
     ap.add_argument("--max-seconds", type=int, default=0, help="只唱前 N 秒（0=整段）")
+    ap.add_argument("--segment-seconds", type=int, default=75,
+                    help="长音频按这个长度切段分别换声（默认 75 秒；0=不分段）")
+    ap.add_argument("--segment-retries", type=int, default=1,
+                    help="单段换声失败后的重试次数（默认 1）")
     ap.add_argument("--gpu-fraction", type=float, default=DEFAULT_GPU_FRACTION,
                     help="显存上限占整卡的比例（默认 0.85，也就是最多用 85%%）；设 1 表示不限制")
     ap.add_argument("--no-separate", action="store_true", help="不做人声分离（输入已是干净人声时用）")
@@ -275,10 +474,14 @@ def main() -> int:
         # 0.9 的闸会让 RVC 直接 OOM（conv_forward 报错，2026-10-30 实测 120 秒必现）。
         # 所以：超过 95 秒（或整首）自动放开闸，并在日志里说清楚。
         gpu_fraction = args.gpu_fraction
-        long_audio = args.max_seconds == 0 or args.max_seconds > 95
+        segmenting = args.segment_seconds > 0
+        # 分段时每段只有几十秒，显存峰值回到安全区 → 闸可以照常开着（既快又不占满显卡）。
+        # 只有"不分段 + 长音频"才必须放开，否则 RVC 会 OOM。
+        # 只有"关掉分段 + 长音频"才需要放开闸；默认分段下永远走 else 分支。
+        long_audio = (args.max_seconds == 0 or args.max_seconds > 95) and not segmenting
         if gpu_fraction is not None and gpu_fraction < 1.0 and long_audio:
             label = "整首" if args.max_seconds == 0 else f"{args.max_seconds} 秒"
-            log(f"长音频（{label}）：自动放开显存上限（{gpu_fraction:.2f} → 不限制），否则会 OOM")
+            log(f"长音频且已关掉分段（{label}）：自动放开显存上限（{gpu_fraction:.2f} → 不限制），否则会 OOM")
             gpu_fraction = None
 
         src_maybe_trimmed = trim(src, args.max_seconds, tmp_dir) if args.max_seconds > 0 else src
@@ -299,22 +502,27 @@ def main() -> int:
                 inst_path = trim(inst_path, args.max_seconds, tmp_dir)
 
         converted = tmp_dir / "converted.wav"
-        # RVC 的 CLI 是包内模块（infer/cli.py 里 import infer.*），必须 `-m infer.cli`
-        # 并在 RVC 根目录下运行；直接 `python infer/cli.py` 会报 No module named 'infer'
-        cmd = [sys.executable, "-m", "infer.cli",
-               "--model", str(pth),
-               "--input", str(vocal_src),
-               "--output", str(converted),
-               "--pitch", str(args.pitch),
-               "--f0-method", f0_method,
-               "--index-rate", str(args.index_rate),
-               "--format", "wav",
-               "--overwrite"]
-        if index is not None:
-            cmd += ["--index", str(index)]
-        run(cmd, "RVC 换声", gpu_fraction=gpu_fraction)
-        if not converted.exists() or converted.stat().st_size == 0:
-            fail("RVC 没有产出音频")
+        common = dict(pth=pth, index=index, pitch=args.pitch, f0_method=f0_method,
+                      index_rate=args.index_rate, gpu_fraction=gpu_fraction)
+
+        vocal_len = duration_seconds(vocal_src)
+        # 分段规则：显式整首、量不出时长、或比"一段 + 5 秒"还长 → 切。
+        # 因为模型只加载一次（见 convert_segments_batch），切段的固定开销已经很小；
+        # 但段太碎会让拼接点变多，留 5 秒余量避免最后切出个几秒的尾巴。
+        threshold = args.segment_seconds + 5
+        need_segments = args.segment_seconds > 0 and (
+            args.max_seconds == 0 or vocal_len <= 0 or vocal_len > threshold)
+
+        if need_segments:
+            segments = slice_audio(vocal_src, tmp_dir / "seg", args.segment_seconds)
+            total = len(segments)
+            log(f"[seg] 人声 {vocal_len:.0f} 秒 → {total} 段（每段约 {args.segment_seconds} 秒），模型只加载一次")
+            parts = convert_segments_batch(segments, tmp_dir, total=total,
+                                           retries=args.segment_retries, **common)
+            concat_audio(parts, converted)
+            log(f"[seg] {total} 段拼接完成")
+        else:
+            convert_vocal(vocal_src, converted, **common)
 
         mix(converted, inst_path if args.keep_inst else None, out)
 

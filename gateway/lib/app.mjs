@@ -8,7 +8,7 @@ import { createSource } from './sources.mjs';
 import { createVoiceEngine } from './voice.mjs';
 import { transcodeTo, probeSeconds } from './audio.mjs';
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.0.1';
 const WEB_DIR = path.join(import.meta.dirname, '..', 'web');
 const NETEASE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const MAX_BODY_BYTES = 8 * 1024;
@@ -164,7 +164,18 @@ export function createApp({
       ? (prepared.ext || config.voice.outputExt)
       : config.voice.outputExt;
     const rawOut = path.join(tmpDir, `voice-${job.jobId}.${voiceExt}`);
-    await voice.convert({ input: prepared.file, output: rawOut, voice: wantedVoice, maxSeconds });
+    await voice.convert({
+      input: prepared.file,
+      output: rawOut,
+      voice: wantedVoice,
+      maxSeconds,
+      // 分段换声时 run.py 会逐段报进度：进度条走 0.6→0.8，消息里写第几段
+      onProgress: ({ done, total, note }) => {
+        const ratio = total > 0 ? Math.min(1, done / total) : 0;
+        // 只把段号写进进度消息，note 里是段文件名，对使用者没意义
+        progress(0.6 + 0.2 * ratio, `换声 ${done}/${total} 段`);
+      }
+    });
 
     progress(0.8, '转码');
     const targetExt = config.transcode === 'auto' ? 'mp3' : (prepared.ext || voiceExt);
@@ -504,8 +515,11 @@ export function createApp({
             }
           };
           let ok = await tryTranscode({ ext: 'mp3' });
-          if (ok && fs.existsSync(converted) && fs.statSync(converted).size > 3.5 * 1024 * 1024) {
-            ok = await tryTranscode({ ext: 'mp3', bitrate: '64k' });
+          // 逐级降码率：96k → 64k → 48k。宿主只收 4MB，10 分钟的歌 64k 也会超。
+          for (const bitrate of ['64k', '48k']) {
+            if (!ok || !fs.existsSync(converted) || fs.statSync(converted).size <= 3.5 * 1024 * 1024) break;
+            console.log(`[voice] 成品仍超过 3.5MB，降到 ${bitrate} 再试`);
+            ok = await tryTranscode({ ext: 'mp3', bitrate });
           }
           if (ok && fs.existsSync(converted)) {
             name = path.basename(converted);

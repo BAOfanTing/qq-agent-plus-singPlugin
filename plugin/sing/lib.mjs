@@ -14,7 +14,7 @@ export const DEFAULTS = Object.freeze({
 });
 
 /** 工具级超时（manifest.tools[].timeoutMs 与这里保持一致，轮询截止时间按它倒推）。 */
-export const TOOL_TIMEOUT_MS = 180000;
+export const TOOL_TIMEOUT_MS = 300000;
 /** 留出下载 + 发送 + 回包的余量：轮询到点就停，不要等到宿主硬超时。 */
 export const POLL_RESERVE_MS = 20000;
 
@@ -81,7 +81,8 @@ export function normalizeSettings(raw) {
     defaultVoice: String(input.defaultVoice ?? DEFAULTS.defaultVoice).trim(),
     maxSeconds: clampInt(input.maxSeconds, 5, 180, DEFAULTS.maxSeconds),
     // 0 = 唱完整首；其余 5..360 秒
-    voiceSeconds: clampInt(input.voiceSeconds, 5, 120, DEFAULTS.voiceSeconds),
+    // 0 = 唱完整首（网关会分段换声，每段留在显存安全区）
+    voiceSeconds: Number(input.voiceSeconds) === 0 ? 0 : clampInt(input.voiceSeconds, 5, 600, DEFAULTS.voiceSeconds),
     allowInsecureHttp: input.allowInsecureHttp === true,
     allowFileOutput: input.allowFileOutput === true,
     pollIntervalMs: clampInt(input.pollIntervalMs, 1000, 10000, DEFAULTS.pollIntervalMs)
