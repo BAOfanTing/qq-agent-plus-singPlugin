@@ -108,38 +108,31 @@ body:  { text, model_id, language_code?, instructions?, voice_settings: { guidan
 
 ### 本仓库的基准音色（大肥鱼·迷糊版）
 
-参考音频不入库（`say-model/ref/` 已在 `.gitignore`，属使用者自己的素材）。做法：从平台导出
-「大肥鱼（迷糊版）」的官方样音，截**第一句**（0-4.7 秒）存成 `say-model/ref/dafeiyu-ref.wav`：
-
-```bash
-ffmpeg -i "大肥鱼（迷糊版）.wav" -t 4.7 -ar 24000 -ac 1 -c:a pcm_s16le say-model/ref/dafeiyu-ref.wav
-```
-
-文稿就是官方那句：
-
-```
-清亮柔软、略带奶气的普通话少女音。
-```
-
-配置：
+用**文字描述**这只音色，不加参考音频 —— 实测这是本地最稳的一档：
 
 ```json
 "say": {
-  "refAudio": "<仓库路径>/say-model/ref/dafeiyu-ref.wav",
-  "refText": "清亮柔软、略带奶气的普通话少女音。",
-  "instructions": "",
-  "cfgScale": 1,
+  "engine": "breeze-local",
+  "instructions": "清亮柔软、略带奶气的普通话少女音。",   // 官方描述，原样照抄
+  "refAudio": "", "refText": "",
+  "cfgScale": 4,
   "pitchTarget": 355,
   "pitchMaxShift": 6
 }
 ```
 
-- 参考克隆（`cfgScale` 必须 1，克隆模板不支持 CFG）
-- `pitchTarget: 355` 把每句基频拉齐；`pitchMaxShift: 6` 是允许的最大改动（实测偶有句子飘到
-  430 Hz，3 半音不够，会跳过归一 —— 放宽到 6 才盖得住）
-- 实测四句：348.7 / 361.0 / 352.8 / 355.8 Hz，最大差 12 Hz（约半个半音）
+实测四句：356.9 / 350.7 / 361.0 / 354.8 Hz，最大差 10 Hz。
 
-> 想换音色：换 `refAudio` + `refText`（文稿必须和音频一字不差），或者改用云端预置音色 `voiceId`。
+三条踩过的经验：
+
+| 试过 | 结果 |
+|---|---|
+| 描述 + 平台标签（Chinese / Animation / Female） | **更差**：两句音高差从 7.9 Hz 涨到 42-45 Hz。标签是平台元数据，不是设计提示词 |
+| 参考音频克隆 | 音色能锁住，但每句要重新编码参考音频，慢 2 秒；且音高仍随文本飘 |
+| 音高归一时用默认 `formant=shifted` | **会把共振峰一起移**，移调 3 个半音就像换了个人；必须 `formant=preserved` |
+
+> 云端有 `voice_id`（design/clone → save 后音色绝对固定），但**本地权重没有这个概念**：
+> `speaker` 只是提示词里的标记，参考音频是每次请求现编码的。
 
 ## 计费与限制
 

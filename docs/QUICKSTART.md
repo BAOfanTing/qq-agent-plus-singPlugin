@@ -95,7 +95,7 @@ powershell -ExecutionPolicy Bypass -File scripts\sync-host-url.ps1 -SshHost root
 | `say.refAudio` + `refText` | 想克隆具体音色时填参考 wav 及其文稿（必须一字不差） |
 | `say.breezeKey` / `voiceId` | 云端用；也可以在插件设置里填（插件会推到网关） |
 | `say.localIdleMs` | 本地模型闲置多久退出，默认 `60000`（1 分钟）；`0` = 常驻不退 |
-| `say.pitchTarget` | 音高归一目标（Hz，如 `355`）；把每句基频拉齐，听起来才是同一个人。`0` = 关闭 |
+| `say.pitchTarget` / `pitchMaxShift` | 音高归一：把每句基频拉齐到目标 Hz（如 `355`，`0` = 关）；最大改动半音数默认 `3`，本地实测设 **6** 才够 |
 | `voice.defaultVoice` | 唱歌音色，即 `sing-model/weights` 里 `.pth` 的文件名 |
 
 改完重启：`schtasks /End /TN QQAgentSingGateway` → `schtasks /Run /TN QQAgentSingGateway`

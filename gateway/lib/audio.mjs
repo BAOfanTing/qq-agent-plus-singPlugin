@@ -149,7 +149,10 @@ export async function transcodeTo(input, output, { maxSeconds = 0, ext = 'mp3', 
 export async function shiftPitch(input, output, ratio, { ext = 'mp3', bitrate = '96k' } = {}) {
   const bin = await detectFfmpeg();
   if (!bin) return false;
-  const args = ['-y', '-i', input, '-af', `rubberband=pitch=${Number(ratio).toFixed(4)}`];
+  // formant=preserved 很关键：默认是 shifted，会把共振峰跟着音高一起移，
+  // 听感上就像换了个人（2026-10-31 实测：四句话被移调 2-3 个半音后音色各异）。
+  const args = ['-y', '-i', input, '-af',
+    `rubberband=pitch=${Number(ratio).toFixed(4)}:formant=preserved:pitchq=quality`];
   if (ext === 'mp3') args.push('-c:a', 'libmp3lame', '-b:a', bitrate);
   args.push(output);
   try {
