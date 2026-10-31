@@ -81,6 +81,66 @@ body:  { text, model_id, language_code?, instructions?, voice_settings: { guidan
 | `GET /say/voices` | 音色列表（转发 Breeze） |
 | `POST /say/config` | `{ apiKey?, voiceId? }` 插件推配置上来；空值表示"别改这一项" |
 
+
+### 音色一致性问题（同样配置，两句听着不像一个人）
+
+实测结论：**音色（音质、共鸣位置）其实是稳的**（两句的 MFCC 相似度 0.99），
+飘的是**音高**——同一音色每次合成的中位基频会差 **25-30 Hz（约 1 个半音）**，
+听感上就像"换了个状态"。
+
+| 现象 | 真实原因 |
+|---|---|
+| 两句听着像两个人 | 基频飘了 1 个半音左右，不是换了嗓子 |
+| 文字描述模式尤其明显 | 设计模式的"嗓子"由 seed 决定，文本和 seed 一致时是稳定的；换 seed/换描述才会换嗓子 |
+| 参考克隆也有一点 | 克隆锁定的是音色，音高仍由文本语调决定 |
+
+**解决办法：音高归一**（`say.pitchTarget`）
+
+```json
+"say": { "pitchTarget": 355, "pitchMaxShift": 3 }
+```
+
+- 每句合成后测一次中位基频（`say-model/f0.py`），用 ffmpeg 的 `rubberband` 只改音高不改速度
+- 拉到 `pitchTarget` 指定的 Hz，`pitchMaxShift` 限制最大改动（超过就不改，宁可不调也别跑调）
+- 实测：三句原本 378 / 350 / 373 Hz（飘 28 Hz），归一到 **353.8 / 350.7 / 354.8 Hz**（差 4 Hz）
+- 代价：每句多 1-2 秒（要跑一次基频检测 + 一次 ffmpeg）
+- `pitchTarget: 0` = 关闭（默认）
+
+### 本仓库的基准音色（大肥鱼·迷糊版）
+
+参考音频不入库（`say-model/ref/` 已在 `.gitignore`，属使用者自己的素材）。做法：从平台导出
+「大肥鱼（迷糊版）」的官方样音，截**第一句**（0-4.7 秒）存成 `say-model/ref/dafeiyu-ref.wav`：
+
+```bash
+ffmpeg -i "大肥鱼（迷糊版）.wav" -t 4.7 -ar 24000 -ac 1 -c:a pcm_s16le say-model/ref/dafeiyu-ref.wav
+```
+
+文稿就是官方那句：
+
+```
+清亮柔软、略带奶气的普通话少女音。
+```
+
+配置：
+
+```json
+"say": {
+  "refAudio": "<仓库路径>/say-model/ref/dafeiyu-ref.wav",
+  "refText": "清亮柔软、略带奶气的普通话少女音。",
+  "instructions": "",
+  "cfgScale": 1,
+  "pitchTarget": 355,
+  "pitchMaxShift": 6
+}
+```
+
+- 参考克隆（`cfgScale` 必须 1，克隆模板不支持 CFG）
+- `pitchTarget: 355` 把每句基频拉齐；`pitchMaxShift: 6` 是允许的最大改动（实测偶有句子飘到
+  430 Hz，3 半音不够，会跳过归一 —— 放宽到 6 才盖得住）
+- 实测四句：348.7 / 361.0 / 352.8 / 355.8 Hz，最大差 12 Hz（约半个半音）
+
+> 想换音色：换 `refAudio` + `refText`（文稿必须和音频一字不差），或者改用云端预置音色 `voiceId`。
+
 ## 计费与限制
 
 实测约 **0.186 额度/字符**（36 字扣 6.7）。免费注册送 1400 额度 → 约 **250 句**短话。

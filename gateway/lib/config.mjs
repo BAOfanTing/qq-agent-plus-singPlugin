@@ -108,6 +108,9 @@ export function normalizeConfig(raw, { rootDir = process.cwd() } = {}) {
       localTimeoutMs: asInt(sayInput.localTimeoutMs, 180000, 10000, 900000),
       // 本地模型闲置多久自动退出（0 = 常驻不退）
       localIdleMs: asInt(sayInput.localIdleMs, 60000, 0, 3600000),
+      // 音高归一：把每句的中位基频拉到这个 Hz（0 = 关闭）
+      pitchTarget: asInt(sayInput.pitchTarget, 0, 0, 600),
+      pitchMaxShift: Number(sayInput.pitchMaxShift) > 0 ? Number(sayInput.pitchMaxShift) : 3,
       // 唱歌前停掉本地 TTS / 说话前拉起来（命令留空 = 不调度）
       localPython: asString(sayInput.localPython),
       localModelDir: asString(sayInput.localModelDir),

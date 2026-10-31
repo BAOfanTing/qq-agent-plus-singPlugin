@@ -21,7 +21,7 @@
 
 好消息是：三种做法都不需要家里有公网 IP。
 
-## 方案一：Cloudflare Tunnel（推荐，免费、自动证书）
+## Cloudflare 快速隧道（推荐，免费、自动证书）
 
 不用手动起 —— `scripts\start-all.ps1` 会自动拉起隧道并打印地址；地址变了用
 `scripts\sync-host-url.ps1 -SshHost root@<IP>` 一条命令同步到服务器。手工起也行：
@@ -55,43 +55,6 @@ ingress:
     service: http://127.0.0.1:8899
   - service: http_status:404
 ```
-
-## 方案二：frp（有便宜 VPS 的话最灵活）
-
-家里电脑跑 `frpc`，VPS 跑 `frps` + nginx 反代（要 https 证书，Let's Encrypt 即可）：
-
-```ini
-# frpc.ini（家里）
-[sing]
-type = http
-local_port = 8899
-custom_domains = sing.example.com
-```
-
-```nginx
-# VPS 上的 nginx
-server {
-  server_name sing.example.com;
-  location / {
-    proxy_pass http://127.0.0.1:8080;   # frps 的 vhost 端口
-    client_max_body_size 100m;
-    proxy_read_timeout 120s;
-  }
-  # 证书交给 certbot / acme.sh
-}
-```
-
-## 方案三：同一台服务器上反代（不推荐）
-
-你已经有 <你的服务器IP> 这台公网服务器。理论上可以 `ssh -R 8899:127.0.0.1:8899` 把家里端口反向映射到
-服务器，再用 nginx + 自签证书暴露成 `https://<你的服务器IP>:8443`。**但：**
-
-- 插件的 `httpDomains` 默认走"公网但禁内网"的守卫，直接填 IP 会被判定为公网 IP 而放行 ——
-  等于把点歌网关挂到公网裸奔，只靠 token 挡；
-- 自签证书在宿主侧会报 TLS 错误，得配真证书；
-- 反向隧道断了要人肉重连。
-
-要这么做，务必：① 只监听 `127.0.0.1`；② 用 nginx 加 `limit_req`；③ 或者干脆用方案一/二。
 
 ## 开机自启（Windows）
 

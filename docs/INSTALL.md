@@ -43,7 +43,7 @@ start-tunnel.bat
 # B. 专线（地址永不变，需要服务器上 nginx 8898 站点已启用）
 ssh -i "$env:USERPROFILE\.ssh\dsh_ed25519_stats" -N -o ExitOnForwardFailure=yes `
     -o ServerAliveInterval=30 -R 127.0.0.1:8899:127.0.0.1:8899 root@<服务器IP>
-# 常驻版：powershell -ExecutionPolicy Bypass -File scripts\run-tunnel-local.ps1 -Host root@<服务器IP>
+# 常驻版：powershell -ExecutionPolicy Bypass -File scripts\run-tunnel-local.ps1 -SshHost root@<服务器IP>
 ```
 
 > 专线要在服务器上先启用站点：
@@ -130,30 +130,23 @@ test/                 32 个用例（含"子进程跑插件、测试扮演宿主
 
 ### 1.1 电脑端：Python 环境（RVC）
 
-RVC 新版**已经不需要 fairseq**（hubert 走 transformers），所以不用编译、不用一键包，一条 pip 装完。
-要求 **Python 3.12 + torch 2.7.1+cu128**（torch 必须 < 2.8）。
+环境（torch / triton / RVC 依赖）不在这里重复——照 **[ENV.md](ENV.md)** 装即可，
+一条命令搞定，且说话与唱歌共用同一套环境。
 
-```bash
-# 1) 建环境（conda 或 venv 都行）
-conda create -y -n rvc python=3.12
+要点只有两条：
 
-# 2) CUDA 版 torch（3.1GB；国内建议用南京大学镜像）
-conda run -n rvc python -m pip install \
-  --index-url https://mirrors.nju.edu.cn/pytorch/whl/cu128 \
-  --extra-index-url https://mirrors.pku.edu.cn/pypi/simple \
-  "torch==2.7.1+cu128" "torchaudio==2.7.1+cu128"
+```powershell
+# torch 必须走 cu128 索引（PyPI 上是 CPU 版）
+python -m pip install torch==2.9.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu128
+# 其余依赖（含 triton 与 RVC 侧）
+python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
 
-# 3) 项目依赖（RVC 自带的清单）
-cd sing-model/rvc
-conda run -n rvc python -m pip install -r requirments_cu128_py312.txt
+ffmpeg 用 `imageio-ffmpeg` 自带的二进制即可（`say-model/bin/ffmpeg.exe` 就是它，网关会自动找）：
 
-# 4) 验证 CUDA
-conda run -n rvc python -c "import torch;print(torch.__version__, torch.cuda.is_available())"
-# → 2.7.1+cu128 True
-
-# 5) ffmpeg（RVC 解码与混音都要用；imageio 自带二进制，不用装系统 ffmpeg）
-conda run -n rvc python -m pip install imageio-ffmpeg
-python -c "import imageio_ffmpeg,shutil,os;os.makedirs('bin',exist_ok=True);shutil.copyfile(imageio_ffmpeg.get_ffmpeg_exe(),'bin/ffmpeg.exe')"
+```powershell
+python -m pip install imageio-ffmpeg
+python -c "import imageio_ffmpeg,shutil,os;os.makedirs('sing-model/bin',exist_ok=True);shutil.copyfile(imageio_ffmpeg.get_ffmpeg_exe(),'sing-model/bin/ffmpeg.exe')"
 ```
 
 ### 1.2 电脑端：RVC 资产
@@ -386,18 +379,6 @@ sudo bash scripts/bridge-container-paths.sh
 > 登录 key 不会经过任何第三方服务。
 
 ---
-
----
-
-## 12. 开机自启（Windows）
-
-```powershell
-schtasks /create /tn "SingGateway" /tr "powershell -NoProfile -ExecutionPolicy Bypass -File E:\path\to\qq-agent-plus-SingPlugin\scripts\run-gateway-forever.ps1" /sc onlogon /rl highest
-schtasks /create /tn "SingTunnel"  /tr "<仓库>\tools\cloudflared.exe tunnel --url http://127.0.0.1:8899 --no-autoupdate" /sc onlogon /rl highest
-```
-
-> 隧道用快速模式时，**每次重启域名都会变** —— 变了跑一次 `set-gateway-url.sh`。
-> 想彻底省事就换成固定域名（named tunnel），见 [docs/TUNNEL.md](docs/TUNNEL.md)。
 
 ---
 

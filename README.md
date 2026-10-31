@@ -154,12 +154,12 @@ RTX 3080 10G / Windows / v1.0.4：
 | 文档 | 内容 |
 |---|---|
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | **三步跑起来**：装依赖 → 一键脚本（体检+配置+网关+隧道）→ 填地址验收 |
-| [docs/INSTALL.md](docs/INSTALL.md) | 完整安装：环境、RVC 资产、网关、隧道、服务器、容器桥接、开机自启、截图清单 |
-| [docs/TUNNEL.md](docs/TUNNEL.md) | 把本机网关暴露成 https：Cloudflare 快速隧道 / 备用专线（ssh -R + nginx TLS） |
-| [docs/SPEAK.md](docs/SPEAK.md) | 说话（TTS）：三档引擎、edge 语音安装与音色、用你的音色说话、排错 |
+| [docs/INSTALL.md](docs/INSTALL.md) | 完整安装：RVC 资产、网关配置、隧道、服务器、容器桥接、网易云登录 |
+| [docs/TUNNEL.md](docs/TUNNEL.md) | 把本机网关暴露成 https：Cloudflare 快速隧道（推荐）/ ssh -R 专线（可选） |
+| [docs/SPEAK.md](docs/SPEAK.md) | 说话：云端 Breeze / 本地权重、音色描述与参考克隆、音高归一、插件配置、排错 |
 | [docs/ENV.md](docs/ENV.md) | 运行环境：一套 conda 环境同时跑说话+唱歌（torch cu128 / triton / RVC 依赖） |
-| [docs/TUNING.md](docs/TUNING.md) | 时长四道闸、**常驻换声**（省掉重复加载）、显存、历史踩坑、验收清单 |
-| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | 运行期报错：发文件 ENOENT、只有原声没换声、超时、fetch failed |
+| [docs/TUNING.md](docs/TUNING.md) | 唱歌时长四道闸、常驻换声、显存、历史踩坑、验收清单 |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | 运行期报错：说话没声音、宿主 524、文件 ENOENT、只有原声没换声、超时 |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | 插件 ↔ 网关 HTTP 契约（想用别的语言重写后端看这个） |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 本地跑测试、代码结构 |
 

@@ -17,6 +17,7 @@ export function runProcess(command, args, { timeoutMs = 300000, env = null } = {
       return;
     }
     let stderr = '';
+    let stdout = '';
     const timer = setTimeout(() => {
       // Windows 上 child.kill 只杀直接子进程；run.py 的孙进程会活下来霸占 GPU。
       // 这里用 taskkill /T 把整棵树收掉（2026-10-29 踩过：孤儿进程空转 9 小时）。
@@ -27,18 +28,19 @@ export function runProcess(command, args, { timeoutMs = 300000, env = null } = {
       reject(Object.assign(new Error(`${command} 超时（${Math.round(timeoutMs / 1000)} 秒）`), { code: 'E_TIMEOUT' }));
     }, timeoutMs);
     child.stderr?.on('data', (chunk) => { stderr += chunk.toString('utf8').slice(-8000); });
+    child.stdout?.on('data', (chunk) => { stdout += chunk.toString('utf8').slice(-8000); });
     child.on('error', (error) => {
       clearTimeout(timer);
       reject(Object.assign(new Error(`无法启动 ${command}：${error.message}`), { code: 'E_SPAWN' }));
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (code === 0) resolve({ code, stderr });
+      if (code === 0) resolve({ code, stderr, stdout });
       // 把完整 stderr 也挂在错误上：ffmpeg -i 的关键信息（Duration）在开头，
       // 只看消息里那 3 行会被截掉（probeSeconds 的兜底解析要用）。
       else reject(Object.assign(
         new Error(`${command} 退出码 ${code}：${stderr.split('\n').slice(-3).join(' ').slice(0, 400)}`),
-        { code: 'E_PROCESS', stderr }
+        { code: 'E_PROCESS', stderr, stdout }
       ));
     });
   });
@@ -136,4 +138,24 @@ export async function transcodeTo(input, output, { maxSeconds = 0, ext = 'mp3', 
   args.push(output);
   await runProcess(bin, args, { timeoutMs: 120000 });
   return true;
+}
+
+/**
+ * 只改音高、不改速度（rubberband）。
+ *
+ * 用来做"音高归一"：同一个音色每次合成的基频会飘 ±25 Hz（约 1 个半音），
+ * 听感上就像换了个人。把每句都拉到同一个目标基频，一致性会好很多。
+ */
+export async function shiftPitch(input, output, ratio, { ext = 'mp3', bitrate = '96k' } = {}) {
+  const bin = await detectFfmpeg();
+  if (!bin) return false;
+  const args = ['-y', '-i', input, '-af', `rubberband=pitch=${Number(ratio).toFixed(4)}`];
+  if (ext === 'mp3') args.push('-c:a', 'libmp3lame', '-b:a', bitrate);
+  args.push(output);
+  try {
+    await runProcess(bin, args, { timeoutMs: 120000 });
+    return true;
+  } catch {
+    return false;
+  }
 }

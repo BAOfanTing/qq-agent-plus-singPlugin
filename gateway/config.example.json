@@ -47,6 +47,8 @@
     "localPython": "<装了 torch2.9.1+cu128 的 python>",
     "localModelDir": "<仓库路径>/say-model/weights/breeze-tts-2",
     "localAppDir": "<仓库路径>/say-model",
-    "localIdleMs": 60000
+    "localIdleMs": 60000,
+    "pitchTarget": 0,
+    "pitchMaxShift": 6
   }
 }

@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { createJobQueue } from './jobs.mjs';
 import { createSource } from './sources.mjs';
 import { createVoiceEngine } from './voice.mjs';
-import { transcodeTo, probeSeconds } from './audio.mjs';
+import { transcodeTo, probeSeconds, shiftPitch, runProcess } from './audio.mjs';
 import { createSayEngine } from './say.mjs';
 
 export const VERSION = '1.0.4';
@@ -517,6 +517,39 @@ export function createApp({
   };
 
   /**
+   * 音高归一：测出这句话的中位基频，用 rubberband 拉到 say.pitchTarget。
+   * 同一个音色每次生成会飘 ±25 Hz（约 1 个半音），听感像换了个人 —— 拉齐之后稳定得多。
+   * 返回归一后的文件路径（失败则原样返回）。
+   */
+  const pitchNormalize = async (file) => {
+    const target = Number(config.say.pitchTarget) || 0;
+    if (target <= 0) return file;
+    const python = String(config.say.localPython || '').trim();
+    const script = config.say.localAppDir ? path.join(config.say.localAppDir, 'f0.py') : '';
+    if (!python || !script || !fs.existsSync(script)) return file;
+    let measured = 0;
+    try {
+      const result = await runProcess(python, [script, file], { timeoutMs: 60000 });
+      measured = Number.parseFloat(String(result?.stderr || result?.stdout || '').trim());
+    } catch (error) {
+      measured = Number.parseFloat(String(error?.stderr || '').trim());
+    }
+    if (!Number.isFinite(measured) || measured <= 0) return file;
+    const ratio = target / measured;
+    const semitones = 12 * Math.log2(ratio);
+    const maxShift = Number(config.say.pitchMaxShift) || 3;
+    if (!Number.isFinite(semitones) || Math.abs(semitones) < 0.15 || Math.abs(semitones) > maxShift) {
+      return file;                                  // 本来就接近，或差得离谱（宁可不改）
+    }
+    const out = file.replace(/\.(wav|mp3|opus)$/i, `-pitch.${/mp3$/i.test(file) ? 'mp3' : 'wav'}`);
+    const ok = await shiftPitch(file, out, ratio, { ext: /mp3$/i.test(out) ? 'mp3' : 'wav' });
+    if (!ok || !fs.existsSync(out)) return file;
+    console.log(`[say] 音高归一：${measured.toFixed(1)} Hz → ${target} Hz（${semitones > 0 ? '+' : ''}${semitones.toFixed(2)} 半音）`);
+    try { fs.rmSync(file, { force: true }); } catch { /* 忽略 */ }
+    return out;
+  };
+
+  /**
    * 把一段话读成语音条（不走 GPU 队列：云端 TTS 几秒就完，没必要排队）。
    * Breeze 直接返回 mp3，不再做任何转码 —— 少一道工序就少一个失败点。
    */
@@ -533,6 +566,9 @@ export function createApp({
       // 401/额度类错误原样带出去：使用者最需要知道的是"Key 不对"还是"没钱了"
       throw Object.assign(new Error(`读这段话失败：${String(error?.message ?? error).slice(0, 240)}`), { code });
     }
+
+    const normalized = await pitchNormalize(spoke.file);
+    if (normalized !== spoke.file) spoke.file = normalized;
 
     const buffer = fs.readFileSync(spoke.file);
     const contentType = spoke.format === 'wav' ? 'audio/wav'
