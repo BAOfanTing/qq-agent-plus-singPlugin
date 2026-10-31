@@ -82,9 +82,9 @@ export function normalizeConfig(raw, { rootDir = process.cwd() } = {}) {
       segmentSeconds: asInt(voice.segmentSeconds, 30, 0, 600),
       gpuFraction: Number(voice.gpuFraction) >= 0 ? Number(voice.gpuFraction) : 0.9
     },
-    // 说话：engine=none 关掉（宿主只能说文字）；windows=系统自带语音
+    // 说话：breeze=云端 / breeze-local=本机权重（带云端兜底）/ none=关掉
     say: {
-      engine: ['none', 'breeze'].includes(asString(sayInput.engine)) ? asString(sayInput.engine) : DEFAULT_CONFIG.say.engine,
+      engine: ['none', 'breeze', 'breeze-local'].includes(asString(sayInput.engine)) ? asString(sayInput.engine) : DEFAULT_CONFIG.say.engine,
       voice: asString(sayInput.voice),
       rate: asInt(sayInput.rate, DEFAULT_CONFIG.say.rate, -10, 10),
       volume: asInt(sayInput.volume, DEFAULT_CONFIG.say.volume, 0, 100),
@@ -98,7 +98,22 @@ export function normalizeConfig(raw, { rootDir = process.cwd() } = {}) {
       instructions: asString(sayInput.instructions),
       guidanceScale: Number(sayInput.guidanceScale) >= 0 ? Number(sayInput.guidanceScale) : 0,
       outputFormat: asString(sayInput.outputFormat) || 'mp3_24000_128',
-      timeoutMs: asInt(sayInput.timeoutMs, DEFAULT_CONFIG.say.timeoutMs, 5000, 300000)
+      timeoutMs: asInt(sayInput.timeoutMs, DEFAULT_CONFIG.say.timeoutMs, 5000, 300000),
+      // 本地 Breeze（breeze_infer.api）：走 multipart + 裸 PCM，用参考音频克隆或纯语气设计
+      localUrl: asString(sayInput.localUrl) || 'http://127.0.0.1:7860',
+      refAudio: asString(sayInput.refAudio),
+      refText: asString(sayInput.refText),
+      cfgScale: Number(sayInput.cfgScale) >= 0 ? Number(sayInput.cfgScale) : 0,
+      localSampleRate: asInt(sayInput.localSampleRate, 24000, 8000, 48000),
+      localTimeoutMs: asInt(sayInput.localTimeoutMs, 180000, 10000, 900000),
+      // 本地模型闲置多久自动退出（0 = 常驻不退）
+      localIdleMs: asInt(sayInput.localIdleMs, 60000, 0, 3600000),
+      // 唱歌前停掉本地 TTS / 说话前拉起来（命令留空 = 不调度）
+      localPython: asString(sayInput.localPython),
+      localModelDir: asString(sayInput.localModelDir),
+      localAppDir: asString(sayInput.localAppDir),
+      localStopCmd: asString(sayInput.localStopCmd),
+      localStartCmd: asString(sayInput.localStartCmd)
     },
     transcode: ['auto', 'never'].includes(asString(input.transcode)) ? asString(input.transcode) : DEFAULT_CONFIG.transcode,
     maxSeconds: asInt(input.maxSeconds, DEFAULT_CONFIG.maxSeconds, 5, 600),

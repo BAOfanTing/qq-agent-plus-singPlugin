@@ -1,6 +1,6 @@
 # 排错
 
-## ## 宿主报 `HTTP 524`（唱歌/说话时）
+## 宿主报 `HTTP 524`（唱歌/说话时）
 
 Cloudflare **快速隧道**对源站响应时间有约 100 秒限制，唱歌（尤其整首）必然越线 → 524。
 换成本机专线即可：
@@ -124,6 +124,8 @@ VIP 曲匿名拿不到直链。二选一：
 
 ## 隧道换了域名怎么办
 
+（Cloudflare 快速隧道每次重启都会换地址）
+
 快速隧道每次重启域名都变，要改**两处**（漏一处就会出现"点歌能用、语音条一直 fetch failed"）：
 
 ```bash
@@ -131,3 +133,26 @@ bash /opt/qq-agent/set-gateway-url.sh https://新域名.trycloudflare.com [网�
 ```
 
 脚本会先自检 `/health`，再写插件的 `gatewayUrl` 和宿主 TTS 的 `baseUrl`，最后回读确认。
+
+## 说话没声音 / 插件显示「说话后端离线」
+
+按顺序查：
+
+```powershell
+# ① 网关活着吗
+curl http://127.0.0.1:8899/health          # 看 "say" 字段是 breeze / breeze-local / none
+
+# ② 说话后端状态（云端看 balance，本地看 localRunning/idleMs）
+curl -H "authorization: Bearer <网关令牌>" http://127.0.0.1:8899/say/status
+```
+
+| status 里的现象 | 原因 |
+|---|---|
+| `engine: "none"` | `say.engine` 设成了 none，改成 `breeze` 或 `breeze-local` |
+| `online:false, note:"还没填 Breeze API Key"` | 云端缺 Key：插件设置里填，或直接写进 `config.json` |
+| `note:"闲置中，说话时自动加载"` | **正常**，本地模型按需加载；发一句就会起来（约 35 秒） |
+| `note:"Breeze 返回 401…"` | Key 不对/未激活；`xi-api-key` 的值要完整（带 `brz_` 前缀） |
+| `note:"本地服务没起来…"` | 本地权重路径或 python 路径不对，检查 `say.localPython` / `localModelDir` |
+| `balance` 很低或 0 | 云端额度用完，换本地或充值 |
+
+> 说话失败时网关会退回"发文字"，不会让整条链路挂掉；日志里搜 `[say]` 能看到具体原因。

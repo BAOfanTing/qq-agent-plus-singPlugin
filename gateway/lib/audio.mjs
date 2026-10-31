@@ -34,7 +34,12 @@ export function runProcess(command, args, { timeoutMs = 300000, env = null } = {
     child.on('close', (code) => {
       clearTimeout(timer);
       if (code === 0) resolve({ code, stderr });
-      else reject(Object.assign(new Error(`${command} 退出码 ${code}：${stderr.split('\n').slice(-3).join(' ').slice(0, 400)}`), { code: 'E_PROCESS' }));
+      // 把完整 stderr 也挂在错误上：ffmpeg -i 的关键信息（Duration）在开头，
+      // 只看消息里那 3 行会被截掉（probeSeconds 的兜底解析要用）。
+      else reject(Object.assign(
+        new Error(`${command} 退出码 ${code}：${stderr.split('\n').slice(-3).join(' ').slice(0, 400)}`),
+        { code: 'E_PROCESS', stderr }
+      ));
     });
   });
 }
@@ -78,18 +83,44 @@ export async function detectFfmpeg() {
   return ffmpegPath;
 }
 
-/** 时长（秒）；没 ffprobe 或解析失败返回 0（调用方按"不知道"处理，不编造数字）。 */
+/**
+ * 时长（秒）；拿不到就返回 0（调用方按"不知道"处理，不编造数字）。
+ *
+ * 优先 ffprobe；没有 ffprobe 时退回解析 `ffmpeg -i` 输出里的 `Duration:` 行 ——
+ * 我们分发的包里只有 ffmpeg.exe，缺 ffprobe 时以前会一直返回 0，
+ * 宿主那边就会按字数估算，出现"说 6 秒、实际 2 秒"的偏差。
+ */
 export async function probeSeconds(file) {
+  const bin = (await detectFfmpeg()) || 'ffmpeg';
+
+  // 1) ffprobe（最准）
   try {
-    const bin = (await detectFfmpeg()) || 'ffmpeg';
     const { stderr } = await runProcess(siblingProbe(bin), [
       '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', file
     ], { timeoutMs: 20000 });
     const seconds = Number.parseFloat(String(stderr).trim());
-    return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
-  } catch {
-    return 0;
+    if (Number.isFinite(seconds) && seconds > 0) return seconds;
+  } catch { /* 没 ffprobe，往下走 */ }
+
+  // 2) ffmpeg -i 的 stderr（注意：不给输出文件时 ffmpeg 退出码是 1，这里要容忍）
+  try {
+    const result = await runProcess(bin, ['-hide_banner', '-i', file], { timeoutMs: 20000 });
+    const text = String(result?.stderr || '');
+    const match = /Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/.exec(text);
+    if (match) {
+      const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+      if (Number.isFinite(seconds) && seconds > 0) return seconds;
+    }
+  } catch (error) {
+    // runProcess 在非零退出码时会 reject，但 stderr 已经带在错误里
+    const text = String(error?.stderr || error?.message || '');
+    const match = /Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/.exec(text);
+    if (match) {
+      const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+      if (Number.isFinite(seconds) && seconds > 0) return seconds;
+    }
   }
+  return 0;
 }
 
 /**

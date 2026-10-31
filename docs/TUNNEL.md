@@ -1,5 +1,9 @@
 # 把本机网关暴露成 https
 
+> **先用方案一（Cloudflare 快速隧道）**：零成本、自动证书、一条命令。
+> 实测整首 3:54 的歌走隧道只要 43 秒，**不会**撞上它的 100 秒上限。
+> 只有极端情况（模型冷启动 + 超长歌）才可能 524 —— 那时再换下面的「备用专线」。
+
 > ⚠️ **快速隧道（trycloudflare 匿名隧道）有个硬约束：源站超过约 100 秒没响应，Cloudflare 就回 `524`。**
 > 唱歌要几十秒到一分半（整首 4 分钟约 83 秒，再排个队就越线），**所以语音条那条通道不要走快速隧道**。
 >
@@ -18,6 +22,9 @@
 好消息是：三种做法都不需要家里有公网 IP。
 
 ## 方案一：Cloudflare Tunnel（推荐，免费、自动证书）
+
+不用手动起 —— `scripts\start-all.ps1` 会自动拉起隧道并打印地址；地址变了用
+`scripts\sync-host-url.ps1 -SshHost root@<IP>` 一条命令同步到服务器。手工起也行：
 
 ```bash
 # 一次性安装：https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
@@ -88,11 +95,24 @@ server {
 
 ## 开机自启（Windows）
 
+> 别用"后台任务"式启动（关掉终端就没了）。用**计划任务**，两个脚本都自带重连/重启循环：
+
+```powershell
+schtasks /Create /TN "QQAgentSingGateway" /TR "powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File \"<仓库>\scripts\run-gateway-forever.ps1\"" /SC ONLOGON /RL HIGHEST /F
+schtasks /Create /TN "QQAgentSingTunnel"  /TR "powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File \"<仓库>\scripts\run-tunnel-local.ps1\" -SshHost root@<你的服务器IP>" /SC ONLOGON /RL HIGHEST /F
+schtasks /Run /TN "QQAgentSingGateway"; schtasks /Run /TN "QQAgentSingTunnel"
+```
+
+> `run-tunnel-local.ps1` 的参数叫 **`-SshHost`**（不能叫 `$Host`：那是 PowerShell 的只读自动变量，
+> 一传就报 `VariableNotWritable`，2026-10-31 踩过）。
+
+旧的写法（固定域名版本）：
+
 两个计划任务，登录时触发、失败重试：
 
 ```powershell
 # 网关
-schtasks /create /tn "SingGateway" /tr "node E:\Cache\qq-agent\qq-agent-plus-SingPlugin\gateway\server.mjs" /sc onlogon /rl highest
+schtasks /create /tn "SingGateway" /tr "node <仓库路径>\gateway\server.mjs" /sc onlogon /rl highest
 # 隧道（固定域名版本）
 schtasks /create /tn "SingTunnel"  /tr "cloudflared tunnel run sing" /sc onlogon /rl highest
 ```
@@ -126,7 +146,7 @@ loginctl enable-linger "$USER"
 
 ---
 
-## 备用专线：ssh -R + nginx TLS（地址永不变）
+## 可选：ssh -R + nginx TLS 专线（地址永不变，没有 100 秒上限）
 
 快速隧道（`trycloudflare.com`）是 Cloudflare 明说"无可用性保证"的免费通道，偶发抖动。
 如果受够了，可以改走**你自己服务器的反向隧道 + nginx TLS**：
@@ -154,6 +174,9 @@ powershell -ExecutionPolicy Bypass -File scripts/run-tunnel-local.ps1 -Host root
 
 ```bash
 # 服务器：把两条通道都指过去
+# 实测：插件（跑在服务器宿主里）也能直接访问 https://<公网IP>:8898，
+# 所以 gatewayUrl 和 tts.baseUrl 可以同时指向这条线，完全不用 Cloudflare。
+# 适合"快速隧道地址老变、懒得每次改"的情况；代价是要在服务器上装证书 + 放行 8898 端口。
 bash set-gateway-url.sh https://<你的服务器IP>:8898 <网关令牌>
 bash set-tts-url.sh     https://<你的服务器IP>:8898/v1
 ```

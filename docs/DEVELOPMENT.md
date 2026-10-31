@@ -23,12 +23,12 @@ node scripts/plugin-dev.mjs <本仓库>/plugin/sing --call sing_status
 ### 发一个版本（推荐：打标签）
 
 ```bash
-git tag v1.0.1 && git push origin v1.0.1
+git tag v1.2.3 && git push origin v1.2.3
 ```
 
 ### 手动跑（Actions 页面 → release → Run workflow）
 
-填 `version`（如 `1.0.1`），`tag` 留空会自动用 `v<version>`，可选标预发布。
+填 `version`（如 `1.2.3`），`tag` 留空会自动用 `v<version>`，可选标预发布。
 
 ### 本地先打好包看一眼
 
@@ -36,7 +36,7 @@ git tag v1.0.1 && git push origin v1.0.1
 node /path/to/qq-agent-plus/scripts/plugin-pack.mjs plugin/sing \
   --out dist --author BAofanTing \
   --homepage https://github.com/BAOfanTing/qq-agent-plus-singPlugin \
-  --tag v1.0.1 --min-version 0.9.10 --tags "点歌,唱歌,语音"
+  --tag v1.2.3 --min-version 0.9.10 --tags "点歌,唱歌,语音"
 ```
 
 产出 `dist/sing-<版本>.tar.gz`（宿主用 ustar 格式，可复现），以及可直接粘进索引的 JSON。

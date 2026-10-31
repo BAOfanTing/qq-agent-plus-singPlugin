@@ -48,9 +48,8 @@ function hintForStatus(status) {
   return '';
 }
 
-export function createSayEngine(config) {
-  const say = config.say || {};
-  const enabled = String(say.engine || 'breeze') === 'breeze';
+function makeCloudEngine(say) {
+  const enabled = true;
 
   // 运行期可被插件覆盖：插件设置里填 Key / 选音色后推到网关，立即生效并落盘
   const runtime = { apiKey: String(say.breezeKey || ''), voiceId: String(say.voiceId || '') };
@@ -174,5 +173,176 @@ export function createSayEngine(config) {
     }
   };
 
+  return engine;
+}
+
+/** 24kHz 单声道 s16le 的裸 PCM 加个 WAV 头（不用 ffmpeg）。 */
+function pcmToWav(pcm, sampleRate = 24000, channels = 1) {
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0, 'ascii');
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8, 'ascii');
+  header.write('fmt ', 12, 'ascii');
+  header.writeUInt32LE(16, 16);                       // fmt 块长度
+  header.writeUInt16LE(1, 20);                        // PCM
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * channels * 2, 28); // byte rate
+  header.writeUInt16LE(channels * 2, 32);             // block align
+  header.writeUInt16LE(16, 34);                       // 位深
+  header.write('data', 36, 'ascii');
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+/**
+ * 本地 Breeze（breeze_infer.api，multipart + 裸 PCM 流）。
+ * 说话用不到"自定义音色 id"，而是「参考音频 + 文稿」（克隆）或纯「语气描述」（Voice Design）。
+ */
+function makeLocalEngine(say) {
+  const base = String(say.localUrl || 'http://127.0.0.1:7860').replace(/\/+$/, '');
+  const refAudio = String(say.refAudio || '').trim();
+  const refText = String(say.refText || '').trim();
+  const instruction = String(say.instructions || '').trim();
+  const cfgScale = Number.isFinite(Number(say.cfgScale)) ? Number(say.cfgScale) : 0;
+  const sampleRate = Number(say.localSampleRate) > 0 ? Number(say.localSampleRate) : 24000;
+  const seed = Number.isFinite(Number(say.seed)) ? Number(say.seed) : 42;
+  const maxChars = Math.max(20, Number(say.maxChars) || 800);
+  const timeoutMs = Math.max(10000, Number(say.localTimeoutMs) || 180000);
+
+  return {
+    name: 'breeze-local',
+    async convert({ text, output }) {
+      const clean = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, maxChars);
+      if (!clean) throw Object.assign(new Error('要读的文字是空的'), { code: 'E_SAY_EMPTY' });
+      if (refAudio && !fs.existsSync(refAudio)) {
+        throw Object.assign(new Error(`参考音频不存在：${refAudio}`), { code: 'E_SAY_NO_REF' });
+      }
+
+      // 参考克隆模板没有 negative prompt，带 cfg_scale>1 会 500
+      // （ValueError: Template 'ref_clone_tata' does not define a negative prompt but cfg_scale=4.0）；
+      // 只有"参考 + instruction"（Voice Direction）才允许 CFG。
+      let effectiveCfg = cfgScale;
+      if (refAudio && !instruction && effectiveCfg > 1) effectiveCfg = 1;
+
+      const form = new FormData();
+      form.set('text', clean);
+      if (instruction) form.set('instruction', instruction);
+      if (effectiveCfg > 0) form.set('cfg_scale', String(effectiveCfg));
+      form.set('seed', String(seed));
+      if (refAudio) {
+        const bytes = fs.readFileSync(refAudio);
+        form.set('ref_audio', new Blob([bytes]), path.basename(refAudio));
+        form.set('ref_text', refText);
+      }
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      let response;
+      try {
+        response = await fetch(`${base}/v1/audio/speech`, { method: 'POST', body: form, signal: controller.signal });
+      } catch (error) {
+        const reason = error?.name === 'AbortError'
+          ? `超时（${Math.round(timeoutMs / 1000)} 秒）`
+          : String(error?.message ?? error);
+        throw Object.assign(new Error(`连不上本地 Breeze（${base}）：${reason}`), { code: 'E_SAY_LOCAL_DOWN' });
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (!response.ok) {
+        let detail = '';
+        try { detail = (await response.text()).slice(0, 240); } catch { /* 忽略 */ }
+        const hint = response.status === 503 ? '（模型还在加载）'
+          : response.status === 409 ? '（上一次还在合成）' : '';
+        throw Object.assign(new Error(`本地 Breeze 返回 ${response.status}${hint}：${detail}`), { code: 'E_SAY_LOCAL_HTTP' });
+      }
+
+      const raw = Buffer.from(await response.arrayBuffer());
+      if (raw.length < 1000) throw Object.assign(new Error('本地 Breeze 返回的音频太小'), { code: 'E_SAY_EMPTY_OUTPUT' });
+      // 服务端有时直接给 WAV，有时给裸 PCM；按 RIFF 头判断
+      const wav = raw.subarray(0, 4).toString('ascii') === 'RIFF' ? raw : pcmToWav(raw, sampleRate, 1);
+      const target = String(output).replace(/\.[^./\\]+$/, '') + '.wav';
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, wav);
+      return { file: target, bytes: wav.length, chars: clean.length, format: 'wav' };
+    },
+
+    async status() {
+      const baseInfo = { engine: 'breeze-local', url: base, hasRef: Boolean(refAudio), refAudio, model: 'breeze-tts-2' };
+      try {
+        const response = await fetch(`${base}/health`, { signal: AbortSignal.timeout(5000) });
+        const data = await response.json().catch(() => ({}));
+        // 503 + {"status":"loading"} = 进程在，但权重还没读进显存
+        const loading = response.status === 503 || String(data?.status || '') === 'loading';
+        return {
+          ...baseInfo,
+          online: response.ok && !loading,
+          loading,
+          hasKey: true,
+          hasVoice: Boolean(refAudio) || Boolean(instruction),
+          balance: null,
+          note: loading ? '模型加载中' : response.ok ? '' : `本地服务返回 ${response.status}`
+        };
+      } catch (error) {
+        return { ...baseInfo, online: false, loading: false, hasKey: true, hasVoice: Boolean(refAudio), balance: null,
+          note: `本地服务没起来（${String(error?.message ?? error).slice(0, 80)}）` };
+      }
+    },
+
+    async listVoices() {
+      // 本地没有"音色库"：要么给参考音频克隆，要么用语气描述设计
+      return [];
+    },
+    async balance() { return null; }
+  };
+}
+
+export function createSayEngine(config) {
+  const say = config.say || {};
+  const engineName = String(say.engine || 'breeze').trim();
+
+  if (engineName === 'none') {
+    return {
+      name: 'none',
+      async convert() { throw Object.assign(new Error('说话功能没开（say.engine = none）'), { code: 'E_SAY_OFF' }); },
+      async status() { return { engine: 'none', online: false, note: '网关没开说话功能' }; },
+      async listVoices() { return []; },
+      async balance() { return null; },
+      credentials: () => ({})
+    };
+  }
+
+  if (engineName === 'breeze-local') {
+    const local = makeLocalEngine(say);
+    const cloud = makeCloudEngine(say);   // 兜底：本地挂了就走云端（有 Key 才生效）
+    return {
+      name: 'breeze-local',
+      setCredentials: (...args) => cloud.setCredentials(...args),
+      credentials: () => cloud.credentials(),
+      async convert(args) {
+        try {
+          return await local.convert(args);
+        } catch (error) {
+          const hasKey = Boolean(cloud.credentials().apiKey);
+          if (!hasKey) throw error;
+          console.warn(`[say] 本地 Breeze 失败，退回云端：${String(error?.message ?? error).slice(0, 140)}`);
+          return await cloud.convert(args);
+        }
+      },
+      async status(options) {
+        const localStatus = await local.status();
+        if (localStatus.online) return localStatus;
+        const cloudStatus = await cloud.status(options);
+        return { ...localStatus, cloudFallback: cloudStatus.online, balance: cloudStatus.balance ?? null,
+          note: localStatus.note + (cloudStatus.online ? '（已退回云端）' : '') };
+      },
+      listVoices: (...args) => cloud.listVoices(...args),
+      balance: (...args) => cloud.balance(...args)
+    };
+  }
+
+  const engine = makeCloudEngine(say);
+  engine.name = 'breeze';
   return engine;
 }

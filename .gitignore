@@ -43,3 +43,13 @@ say-model/outputs/
 __pycache__/
 *.pyc
 say-model/.venv/
+# ── 说话：参考音频与试听样本（含使用者音色，绝不入库）─────────────────
+say-model/ref/
+# 本地模型进程日志 / pid
+say-model/logs/
+*.pid
+# 虚拟环境（谁建谁用，别提交）
+.venv/
+venv/
+# 体检/试听临时产物
+say-model/*.crdownload

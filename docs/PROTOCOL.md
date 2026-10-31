@@ -12,7 +12,7 @@
 **免鉴权**（方便排查隧道通不通），只暴露"在不在、什么引擎"：
 
 ```json
-{ "ok": true, "version": "1.0.3",
+{ "ok": true, "version": "1.0.4",
   "engine": "command", "say": "windows", "voiceConfigured": true, "voices": ["hanser"],
   "source": "netease", "transcode": "auto", "jobs": 0,
   "voiceSeconds": 0, "voiceFullSong": true, "voiceMaxSeconds": 600, "jobMaxSeconds": 600 }
@@ -28,11 +28,11 @@
 ```json
 { "ok": true, "items": [
   { "id": "1440833098", "title": "孤勇者", "artist": "陈奕迅",
-    "durationSec": 256, "source": "itunes" }
+    "durationSec": 256, "source": "netease" }
 ] }
 ```
 
-`id` 由网关自定义（iTunes 用 trackId，local 用文件名）；空结果是 `items: []`，不是错误。
+`id` 由网关自定义（netease 用歌曲 id，local 用文件名）；空结果是 `items: []`，不是错误。
 
 ## POST /sing
 
@@ -79,7 +79,7 @@
 | 输入 | 行为 | 响应 |
 |---|---|---|
 | 含点歌意图（`唱：歌名`、`点歌唱…`、句中触发） | 走换声流水线（同步等成品，整首会自动分段） | 音频字节 + `x-audio-seconds` |
-| 其它文本 | 走 `say` 引擎（Windows 自带语音） | 音频字节 + `x-audio-seconds` |
+| 其它文本 | 走 `say` 引擎（Breeze 云端 / 本机 Breeze） | 音频字节 + `x-audio-seconds` |
 
 ```http
 POST /v1/audio/speech
@@ -98,7 +98,25 @@ Content-Type: application/json
 
 ## 为什么要异步
 
-宿主给插件工具的超时默认 3 分钟（本插件 `sing_song` 声明 300 秒）。整首 4 分钟的歌分段换声（每段 30 秒、模型只加载一次）在 3080 上约 82 秒，
-通常 20-60 秒，CPU 上可能好几分钟 —— 同步接口会让调用方卡在超时上，还看不到进度。
+宿主给插件工具的超时默认 3 分钟（本插件 `sing_song` 声明 300 秒）。整首 4 分钟的歌分段换声（每段 30 秒、模型只加载一次）在 3080 上约 22 秒（换声常驻时），
+冷启动会多十几秒，CPU 上可能好几分钟 —— 同步接口会让调用方卡在超时上，还看不到进度。
 所以：**提交拿 jobId → 每 1-2 秒问一次 → 完成再下载**。插件在轮询到 `180s - 20s` 时会主动放弃并
 回一句"歌太长或电脑在忙"，而不是让宿主硬杀进程。
+
+## GET /say/status ・ GET /say/voices ・ POST /say/config
+
+插件页的「说话后端在线」和音色列表靠这三个口：
+
+```json
+// GET /say/status
+{ "ok": true, "engine": "breeze-local", "online": true, "hasKey": true, "hasVoice": true,
+  "voiceId": "", "model": "breeze-tts-2", "balance": null,
+  "note": "闲置中，说话时自动加载", "cloudFallback": true,
+  "localRunning": false, "idleMs": 60000 }
+
+// GET /say/voices  → { "ok": true, "items": [ { "id": "voc_xxx", "name": "大肥鱼（迷糊版）" } ] }
+// POST /say/config → { "apiKey": "brz_…", "voiceId": "voc_xxx" }（空值表示"别改这一项"）
+```
+
+`online` 的语义是「**能不能服务**」：本地模型闲置退出后进程不在，但只要 python 与权重路径配好，
+仍然报 `online: true` 并附 `note`。`balance` 只有云端才有值。

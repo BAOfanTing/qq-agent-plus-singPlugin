@@ -2,14 +2,22 @@
 
 完整安装步骤。只想先跑起来，看 [README](../README.md) 的「快速开始」即可。
 
+> 只想照着做一遍？看 **[QUICKSTART.md](QUICKSTART.md)**（三步，含一键启动脚本）。环境与版本组合见 **[ENV.md](ENV.md)**。
+
 ## 关掉之后怎么重新起（手动启动速查）
 
-四个部分，按顺序起。**任何一步没起，群里点歌都会失败**（会明确报"后端离线"或"网关连不上"）。
+**先试这一条**（自动做完体检 + 配置 + 网关 + 隧道）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\start-all.ps1 -Detach
+```
+
+下面是手动版，四部分按顺序起。**任何一步没起，群里点歌都会失败**（会明确报"后端离线"或"网关连不上"）。
 
 ### ① 电脑端：起网关
 
 ```powershell
-cd E:\Cache\qq-agent\qq-agent-plus-SingPlugin
+cd <仓库路径>
 node gateway\server.mjs                       # 前台，能看每条 [req] 日志（推荐排错时用）
 # 或双击 start-gateway.bat
 # 或常驻：powershell -ExecutionPolicy Bypass -File scripts\run-gateway-forever.ps1
@@ -26,7 +34,7 @@ curl http://127.0.0.1:8899/health
 
 ```powershell
 # A. Cloudflare 快速隧道（域名每次变）
-$env:CLOUDFLARED = "E:\Cache\qq-agent\tools\cloudflared.exe"
+$env:CLOUDFLARED = "<仓库路径>\tools\cloudflared.exe"
 start-tunnel.bat
 # 输出里找 https://xxx-xxx-xxx.trycloudflare.com
 ```
@@ -87,7 +95,7 @@ plugin/sing/          qq-agent 插件本体（零依赖，可打包上架）
 gateway/              跑在你电脑上的换声网关（零依赖 Node）
   server.mjs          入口；含每天 00:00 的成品清理排程
   lib/config.mjs      配置读写与校验
-  lib/sources.mjs     音源：网易云 / iTunes / 本地目录（含搜索排序打分）
+  lib/sources.mjs     音源：网易云 / 本地目录（含搜索排序打分）
   lib/voice.mjs       换声：none（直出）/ command（调你的 RVC 命令行）
   lib/app.mjs         路由 + 流水线（/health /search /sing /jobs /files /v1/audio/speech /admin/prune /login*）
   web/login.html      网易云扫码登录页（二维码在本地渲染，key 不出本机）
@@ -205,7 +213,7 @@ cp config.example.json config.json
 | 键 | 说明 |
 |---|---|
 | `token` | **必设**。插件与宿主都带 `Authorization: Bearer <token>` |
-| `source.type` | `netease`（默认，中文曲库全）/ `itunes`（30 秒试听段）/ `local`（你自己的音频目录） |
+| `source.type` | `netease`（默认，中文曲库全）/ `local`（你自己的音频目录） |
 | `source.neteaseCookie` | 网易云登录后的 `MUSIC_U=…`。**VIP 曲不填拿不到原唱**；不填会自动降级到同名免费翻唱版 |
 | `source.localDir` | `local` 时必填 |
 | `voice.engine` | `command`（真换声，用你的 RVC）/ `none`（直出原音，只用来验证链路） |
@@ -385,7 +393,7 @@ sudo bash scripts/bridge-container-paths.sh
 
 ```powershell
 schtasks /create /tn "SingGateway" /tr "powershell -NoProfile -ExecutionPolicy Bypass -File E:\path\to\qq-agent-plus-SingPlugin\scripts\run-gateway-forever.ps1" /sc onlogon /rl highest
-schtasks /create /tn "SingTunnel"  /tr "E:\Cache\qq-agent\tools\cloudflared.exe tunnel --url http://127.0.0.1:8899 --no-autoupdate" /sc onlogon /rl highest
+schtasks /create /tn "SingTunnel"  /tr "<仓库>\tools\cloudflared.exe tunnel --url http://127.0.0.1:8899 --no-autoupdate" /sc onlogon /rl highest
 ```
 
 > 隧道用快速模式时，**每次重启域名都会变** —— 变了跑一次 `set-gateway-url.sh`。
@@ -423,3 +431,22 @@ su - qqagent -c 'export XDG_RUNTIME_DIR=/run/user/$(id -u); systemctl --user dae
 > 建议顺序：**2 → 1 → 4 → 3**（先看配置，再看群效果，最后看登录）。
 
 ---
+
+### 开机自启用计划任务（Windows）
+
+网关和反向隧道都别用"后台任务"式启动（会话结束就没了），做成计划任务：
+
+```powershell
+# 网关（崩溃自动重启，脚本里自带循环）
+schtasks /Create /TN "QQAgentSingGateway" /TR "powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File \"<仓库>\scripts\run-gateway-forever.ps1\"" /SC ONLOGON /RL HIGHEST /F
+
+# 反向隧道（同样自带重连循环；注意参数叫 -SshHost，不能叫 $Host）
+schtasks /Create /TN "QQAgentSingTunnel" /TR "powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File \"<仓库>\scripts\run-tunnel-local.ps1\" -SshHost root@<你的服务器IP>" /SC ONLOGON /RL HIGHEST /F
+
+schtasks /Run /TN "QQAgentSingGateway"
+schtasks /Run /TN "QQAgentSingTunnel"
+```
+
+> 2026-10-31 踩过：`run-tunnel-local.ps1` 原来把参数叫 `$Host`，那是 PowerShell 的只读自动变量，
+> 一传就报 "VariableNotWritable"，隧道根本起不来。现在改名为 `-SshHost`。
+

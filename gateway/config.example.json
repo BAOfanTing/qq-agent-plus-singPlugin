@@ -14,7 +14,7 @@
     "pitch": 0,
     "outputExt": "wav",
     "defaultVoice": "me",
-    "serveCommand": "\"python\" \"E:/Cache/qq-agent/qq-agent-plus-SingPlugin/sing-model/run.py\" --serve",
+    "serveCommand": "\"<装了 RVC 依赖的 python>\" \"<仓库路径>/sing-model/run.py\" --serve",
     "serveIdleMs": 600000,
     "gpuFraction": 0.9
   },
@@ -35,6 +35,18 @@
     "languageCode": "zh",
     "instructions": "",
     "guidanceScale": 4.0,
-    "outputFormat": "mp3_24000_128"
+    "outputFormat": "mp3_24000_128",
+    "localUrl": "http://127.0.0.1:7860",
+    "refAudio": "",
+    "refText": "",
+    "cfgScale": 4.0,
+    "localSampleRate": 24000,
+    "localTimeoutMs": 180000,
+    "localStopCmd": "powershell -ExecutionPolicy Bypass -NoProfile -File \"<仓库路径>\\say-model\\stop-local.ps1\"",
+    "localStartCmd": "powershell -ExecutionPolicy Bypass -NoProfile -File \"<仓库路径>\\say-model\\start-local.ps1\"",
+    "localPython": "<装了 torch2.9.1+cu128 的 python>",
+    "localModelDir": "<仓库路径>/say-model/weights/breeze-tts-2",
+    "localAppDir": "<仓库路径>/say-model",
+    "localIdleMs": 60000
   }
 }

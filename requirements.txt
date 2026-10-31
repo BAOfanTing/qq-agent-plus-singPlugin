@@ -1,0 +1,53 @@
+# 本插件全部 Python 依赖（说话 + 唱歌共用一套环境）
+#
+# 用法（一次装完）：
+#   python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+#
+# 说明：
+#   * torch/torchaudio 带 +cu128 后缀，pip 会去下面的 extra-index（PyTorch 官方 cu128 源）取；
+#     不加这个源会报 "No matching distribution found for torch==2.9.1+cu128"。
+#   * 国内下载 torch 那个 2.67 GB 轮子很慢，可以先手动下好再用本地文件装：
+#       https://download.pytorch.org/whl/cu128/torch-2.9.1%2Bcu128-cp311-cp311-win_amd64.whl
+#       https://download.pytorch.org/whl/cu128/torchaudio-2.9.1%2Bcu128-cp311-cp311-win_amd64.whl
+#       python -m pip install --no-index --find-links <轮子目录> "torch==2.9.1+cu128" "torchaudio==2.9.1+cu128"
+#     然后注释掉下面两行 torch，再跑本文件。
+#   * 只唱歌、说话走云端（say.engine = "breeze"）的话，可以删掉 triton-windows / qwen-tts / transformers。
+#
+# 版本是 2026-10-31 在 RTX 3080 / Windows 11 / Python 3.11 上实测跑通的组合。
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# ── GPU 底座 ───────────────────────────────────────────────
+torch==2.9.1+cu128
+torchaudio==2.9.1+cu128
+# Breeze 的 models/fast_streaming.py 在 import 期就 import triton，缺了直接启动失败；
+# 3.6+ 会让 Inductor 报 "'KernelMetadata' object has no attribute 'cluster_dims'"。
+triton-windows==3.5.1.post24
+
+# ── 说话：Breeze TTS 2（本地推理）──────────────────────────
+qwen-tts==0.1.1
+transformers==4.57.3
+tokenizers==0.22.2
+safetensors==0.8.0
+accelerate==1.12.0
+huggingface-hub==0.36.2
+fastapi==0.162.0
+uvicorn==0.54.0
+python-multipart==0.0.32
+
+# ── 唱歌：RVC 换声 + pymss 分离 ────────────────────────────
+faiss-cpu==1.15.1
+pymss==2.2.0
+torchfcpe==0.0.4
+praat-parselmouth==0.4.7
+onnxruntime-gpu==1.31.1
+einops==0.8.2
+ffmpeg-python==0.2.0
+
+# ── 音频与数值（两侧共用）──────────────────────────────────
+numpy==2.4.6
+scipy==1.17.1
+librosa==0.11.0
+soundfile==0.14.0
+soxr==1.1.0
+av==18.1.0

@@ -3,13 +3,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { createJobQueue } from './jobs.mjs';
 import { createSource } from './sources.mjs';
 import { createVoiceEngine } from './voice.mjs';
 import { transcodeTo, probeSeconds } from './audio.mjs';
 import { createSayEngine } from './say.mjs';
 
-export const VERSION = '1.0.3';
+export const VERSION = '1.0.4';
 const WEB_DIR = path.join(import.meta.dirname, '..', 'web');
 const NETEASE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const MAX_BODY_BYTES = 8 * 1024;
@@ -256,7 +257,15 @@ export function createApp({
     }
   } catch { /* 状态文件坏了就当没有 */ }
 
-  const queue = createJobQueue({ runner: runSingJob, ttlMs: config.filesTtlHours * 3600 * 1000, now });
+  const queue = createJobQueue({
+    // 唱歌前先把本地 TTS 的显存让出来（yieldLocalSay 在同作用域里定义，调用时已初始化）
+    runner: async (job, ctx) => {
+      await yieldLocalSay();
+      return await runSingJob(job, ctx);
+    },
+    ttlMs: config.filesTtlHours * 3600 * 1000,
+    now
+  });
 
   const tokenOk = (req) => {
     if (!config.token) return true;
@@ -363,12 +372,158 @@ export function createApp({
     return { removed, bytes };
   };
 
+  // ── 本地 TTS 进程管理 ────────────────────────────────────
+  // 由网关自己起/停 python —— 不经过 PowerShell：脚本里的 Invoke-WebRequest 轮询
+  // 在被网关拉起时会被宿主沙箱挡住，导致白等 360 秒（2026-10-31 实测 440 秒/句）。
+  let localChild = null;
+  const localSayPort = (() => {
+    try { return new URL(config.say.localUrl || 'http://127.0.0.1:7860').port || '7860'; } catch { return '7860'; }
+  })();
+
+  const localHealthOk = async () => {
+    try {
+      const response = await fetch(`http://127.0.0.1:${localSayPort}/health`, { signal: AbortSignal.timeout(3000) });
+      return response.ok;
+    } catch { return false; }
+  };
+
+  /** 起本地 Breeze（若已在跑就跳过），等到 /health 通才算成功。 */
+  const startLocalSay = async ({ waitMs = 240000 } = {}) => {
+    if (localChild && localChild.exitCode === null) return true;
+    if (await localHealthOk()) return true;           // 别人起的也在用
+    const python = String(config.say.localPython || '').trim();
+    const modelDir = String(config.say.localModelDir || '').trim();
+    if (!python || !modelDir) {
+      // 没配内置管理就退回用户给的命令
+      if (!config.say.localStartCmd) return false;
+      return await runShell(config.say.localStartCmd, waitMs);
+    }
+    // say-model 根目录（PYTHONPATH 要它）：优先用显式配置，否则从 .../weights/<名字> 反推
+    const root = String(config.say.localAppDir || '').trim()
+      || modelDir.replace(/[\\/]weights[\\/].*$/i, '');
+    console.log(`[say] 启动本地 Breeze：${python}（端口 ${localSayPort}）`);
+    localChild = spawn(python, ['-m', 'breeze_infer.api', modelDir, '--host', '127.0.0.1', '--port', localSayPort], {
+      cwd: root,
+      windowsHide: true,
+      env: { ...process.env, PYTHONPATH: root, PYTHONIOENCODING: 'utf-8', TORCHINDUCTOR_USE_STATIC_CUDA_LAUNCHER: '0' }
+    });
+    localChild.stderr?.on('data', (chunk) => {
+      const text = chunk.toString('utf8').trim();
+      if (text) console.log(`[say-local] ${text.slice(-300)}`);
+    });
+    localChild.on('close', (code) => {
+      console.log(`[say] 本地 Breeze 进程退出（code=${code}）`);
+      localChild = null;
+    });
+
+    const deadline = Date.now() + waitMs;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      if (localChild === null) return false;          // 启动即崩
+      if (await localHealthOk()) {
+        console.log('[say] 本地 Breeze 就绪');
+        return true;
+      }
+    }
+    console.warn('[say] 本地 Breeze 等待就绪超时');
+    return false;
+  };
+
+  // 闲置自动退出：本地模型常驻要吃 8.2 GB，不能白占着显卡。
+  // 每说完一句就重置计时器，超时就把进程杀掉；下次说话时再拉起（加载约 8 秒）。
+  let localIdleTimer = null;
+  const clearLocalIdle = () => {
+    if (localIdleTimer) { clearTimeout(localIdleTimer); localIdleTimer = null; }
+  };
+  const armLocalIdle = () => {
+    clearLocalIdle();
+    const idleMs = Number(config.say.localIdleMs) || 0;
+    if (idleMs <= 0) return;                          // 0 = 常驻不退
+    localIdleTimer = setTimeout(async () => {
+      localIdleTimer = null;
+      if (!localChild) return;
+      console.log(`[say] 本地 TTS 闲置 ${Math.round(idleMs / 1000)} 秒，退出并释放显存`);
+      await stopLocalSay();
+      localSayStopped = true;
+    }, idleMs);
+    localIdleTimer.unref?.();
+  };
+
+  /** 停本地 Breeze，把显存腾出来。 */
+  const stopLocalSay = async () => {
+    clearLocalIdle();
+    if (localChild && localChild.pid) {
+      if (process.platform === 'win32') {
+        try { spawn('taskkill', ['/T', '/F', '/PID', String(localChild.pid)], { windowsHide: true }); } catch { /* 忽略 */ }
+      }
+      try { localChild.kill('SIGKILL'); } catch { /* 忽略 */ }
+      localChild = null;
+    }
+    if (config.say.localStopCmd) await runShell(config.say.localStopCmd, 60000);
+    // 等显存真的释放（torch 退出到驱动回收有延迟）
+    for (let i = 0; i < 10; i += 1) {
+      if (!(await localHealthOk())) break;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  };
+
+  // ── 本地 TTS 让位 ────────────────────────────────────────
+  // 本地 Breeze eager 要吃 8.4 GB：驻留时唱歌会从 10 秒变 51 秒（显存挤占）。
+  // 所以唱歌前把它停掉、说话前再拉起来。命令留空 = 不做这套调度。
+  let localSayStopped = false;
+
+  const runShell = (command, timeoutMs = 120000) => new Promise((resolve) => {
+    const child = spawn(command, { shell: true, windowsHide: true });
+    const timer = setTimeout(() => {
+      if (process.platform === 'win32' && child.pid) {
+        try { spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { windowsHide: true }); } catch { /* 忽略 */ }
+      }
+      try { child.kill('SIGKILL'); } catch { /* 忽略 */ }
+      resolve(false);
+    }, timeoutMs);
+    timer.unref?.();
+    child.on('close', (code) => { clearTimeout(timer); resolve(code === 0); });
+    child.on('error', () => { clearTimeout(timer); resolve(false); });
+  });
+
+  /** 唱歌前调用：把本地 TTS 停掉，把显存让给换声。 */
+  const yieldLocalSay = async () => {
+    if (config.say.engine !== 'breeze-local') return;
+    if (localSayStopped) return;
+    if (!localChild && !config.say.localStopCmd) return;
+    console.log('[say] 唱歌要占显存，先停掉本地 TTS');
+    await stopLocalSay();
+    localSayStopped = true;
+  };
+
+  /** 说话前调用：确保本地 TTS 在跑（已就绪就只做一次健康检查，几毫秒）。 */
+  const resumeLocalSay = async () => {
+    if (config.say.engine !== 'breeze-local') return;
+    if (localChild && localChild.exitCode === null) return;
+    if (!localSayStopped && (await localHealthOk())) return;
+    // 换声的常驻进程闲着也占 2.4 GB；本地 TTS 要 8.4 GB，10 GB 卡上会顶到颠簸
+    // （实测挤在一起时一句要 435 秒）。所以先把换声常驻收掉，下次唱歌它会自己重启。
+    if (typeof voice.shutdown === 'function') {
+      try {
+        voice.shutdown();
+        console.log('[say] 已收掉换声常驻进程，把显存让给本地 TTS');
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      } catch { /* 忽略 */ }
+    }
+    console.log('[say] 说话要用本地 TTS，正在加载模型…');
+    const ok = await startLocalSay();
+    localSayStopped = !ok;
+    if (!ok) console.warn('[say] 本地 TTS 没拉起来，将退回云端（如果配了 Key）');
+  };
+
   /**
    * 把一段话读成语音条（不走 GPU 队列：云端 TTS 几秒就完，没必要排队）。
    * Breeze 直接返回 mp3，不再做任何转码 —— 少一道工序就少一个失败点。
    */
   async function handleSay(req, res, text) {
     const startedAt = Date.now();
+    clearLocalIdle();                                 // 有请求进来就别再倒计时
+    await resumeLocalSay();
     const raw = path.join(tmpDir, `say-${Date.now()}.wav`);
     let spoke;
     try {
@@ -394,6 +549,7 @@ export function createApp({
     });
     res.end(buffer);
     try { fs.rmSync(spoke.file, { force: true }); } catch { /* 忽略 */ }
+    armLocalIdle();                                   // 说完开始闲置倒计时
   }
 
   const handler = async (req, res) => {
@@ -624,7 +780,29 @@ export function createApp({
       // 插件页要显示「后端在线」+ 音色列表 + 余额，所以这三个口都给插件用（Bearer 鉴权）。
       if (pathname === '/say/status' && req.method === 'GET') {
         const fresh = url.searchParams.get('fresh') === '1';
-        sendJson(res, 200, { ok: true, ...(await say.status({ fresh })) });
+        const status = await say.status({ fresh });
+        // 本地模型闲置退出后进程不在，但"能服务"——不该让插件显示成离线。
+        // 只要配置齐（python + 权重目录都在），就算 idle 也报在线，附一句说明。
+        let { online, note } = status;
+        const localRunning = Boolean(localChild);
+        if (config.say.engine === 'breeze-local' && !localRunning) {
+          const canStart = Boolean(config.say.localPython && config.say.localModelDir)
+            && fs.existsSync(config.say.localModelDir);
+          if (canStart) {
+            online = true;
+            note = note && note.includes('本地服务没起来')
+              ? '闲置中，说话时自动加载'
+              : (note || '闲置中，说话时自动加载');
+          }
+        }
+        sendJson(res, 200, {
+          ok: true,
+          ...status,
+          online,
+          note,
+          localRunning,
+          idleMs: Number(config.say.localIdleMs) || 0
+        });
         return;
       }
 
