@@ -36,3 +36,10 @@ sing-model/__pycache__/
 *.onnx
 *.safetensors
 *.whl
+# ── 说话模型（Breeze TTS 2）：代码入库，权重/下载/产物不入库 ──────────
+say-model/weights/
+say-model/downloads/
+say-model/outputs/
+__pycache__/
+*.pyc
+say-model/.venv/

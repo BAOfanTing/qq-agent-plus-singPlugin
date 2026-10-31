@@ -296,7 +296,7 @@ test('/v1/audio/speech：唱歌请求直接返回音频字节（给宿主的语�
   } finally { await close(); }
 });
 
-test('/v1/audio/speech：关掉 TTS 时，非点歌文本明确拒绝', async () => {
+test('/v1/audio/speech：关掉说话时，非点歌文本明确拒绝', async () => {
   const { base, close } = await boot({ say: { engine: 'none' } });
   try {
     const response = await call(base, '/v1/audio/speech', {
@@ -305,16 +305,42 @@ test('/v1/audio/speech：关掉 TTS 时，非点歌文本明确拒绝', async ()
     });
     assert.equal(response.status, 400);
     const json = await response.json();
-    assert.match(json.message, /TTS/);
+    assert.match(json.message, /说话|breeze/);
   } finally { await close(); }
 });
 
-test('/v1/audio/speech：非点歌文本 → 说话（TTS）', async (t) => {
-  if (process.platform !== 'win32') {
-    t.skip('只有 Windows 有系统自带语音');
-    return;
-  }
-  const { base, close } = await boot({ say: { engine: 'windows', voice: '' } });
+test('/v1/audio/speech：非点歌文本 → 说话（Breeze，用假服务验请求形状）', async () => {
+  const seen = { path: '', key: '', body: null };
+  const fake = http.createServer((req, res) => {
+    if (req.url.startsWith('/v1/text-to-speech/')) {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        seen.path = req.url;
+        seen.key = String(req.headers['xi-api-key'] || '');
+        try { seen.body = JSON.parse(body || '{}'); } catch { seen.body = null; }
+        res.writeHead(200, { 'content-type': 'audio/mpeg' });
+        res.end(Buffer.alloc(4096, 7));
+      });
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  await new Promise((resolve) => fake.listen(0, '127.0.0.1', resolve));
+  const fakePort = fake.address().port;
+
+  const { base, close } = await boot({
+    say: {
+      engine: 'breeze',
+      breezeUrl: `http://127.0.0.1:${fakePort}`,
+      breezeKey: 'brz_test_key',
+      voiceId: 'voc_test_voice',
+      breezeModel: 'breeze-tts-2',
+      languageCode: 'zh',
+      guidanceScale: 4
+    }
+  });
   try {
     const response = await call(base, '/v1/audio/speech', {
       method: 'POST',
@@ -322,12 +348,48 @@ test('/v1/audio/speech：非点歌文本 → 说话（TTS）', async (t) => {
     });
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-type') || '', /^audio\//);
-    // 真实时长要报出来，否则宿主会退回"按字数估"
     assert.ok(Number(response.headers.get('x-audio-seconds')) > 0);
     const buffer = Buffer.from(await response.arrayBuffer());
     assert.ok(buffer.length > 2000, `音频太小：${buffer.length}`);
-  } finally { await close(); }
+
+    // 请求形状要和 Breeze openapi 一致
+    assert.match(seen.path, /^\/v1\/text-to-speech\/voc_test_voice\?/);
+    assert.match(seen.path, /output_format=mp3/);
+    assert.equal(seen.key, 'brz_test_key');
+    assert.equal(seen.body?.text, '你好，这是一条测试语音。');
+    assert.equal(seen.body?.model_id, 'breeze-tts-2');
+    assert.equal(seen.body?.language_code, 'zh');
+    assert.equal(seen.body?.voice_settings?.guidance_scale, 4);
+  } finally {
+    await close();
+    await new Promise((resolve) => fake.close(resolve));
+  }
 });
+
+test('/v1/audio/speech：Breeze 报 401 时如实带出原因', async () => {
+  const fake = http.createServer((req, res) => {
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, code: 'AUTH_REQUIRED', detail: 'Authentication required.' }));
+  });
+  await new Promise((resolve) => fake.listen(0, '127.0.0.1', resolve));
+  const fakePort = fake.address().port;
+  const { base, close } = await boot({
+    say: { engine: 'breeze', breezeUrl: `http://127.0.0.1:${fakePort}`, breezeKey: 'brz_bad', voiceId: 'voc_x' }
+  });
+  try {
+    const response = await call(base, '/v1/audio/speech', {
+      method: 'POST',
+      body: { input: '这句话应该失败，因为密钥是错的，请检查配置。' }
+    });
+    assert.notEqual(response.status, 200);
+    const json = await response.json();
+    assert.match(String(json.message || json.error || ''), /401|Key|鉴权|AUTH/i);
+  } finally {
+    await close();
+    await new Promise((resolve) => fake.close(resolve));
+  }
+});
+
 
 test('句中触发的点歌也能认出来（模型常写"好的，我来唱：起风了"）', async () => {
   const { extractSongRequest } = await import('../gateway/lib/app.mjs');

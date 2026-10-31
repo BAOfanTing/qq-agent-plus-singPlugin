@@ -78,11 +78,19 @@ async function loadConfig() {
   ]);
   const conf = normalizeSettings(settings);
   let token = '';
+  let breezeKey = '';
   try {
     const secrets = await callHost('cap.secrets.get', {});
     token = String(secrets?.values?.apiToken ?? '');
+    breezeKey = String(secrets?.values?.breezeKey ?? '').trim();
   } catch { token = ''; }
-  return { ...conf, token, gatewayUrlFallback: String(settings?.gatewayUrlFallback ?? "").trim() };
+  return {
+    ...conf,
+    token,
+    breezeKey,
+    breezeVoiceId: String(settings?.breezeVoiceId ?? '').trim(),
+    gatewayUrlFallback: String(settings?.gatewayUrlFallback ?? "").trim()
+  };
 }
 
 /** GET/POST 网关，返回解析后的 JSON。状态码非 2xx 时把网关的 message 原样带出来。 */
@@ -187,7 +195,65 @@ async function syncVoiceSeconds(conf) {
   }
 }
 
+
+// 插件设置里的 Breeze Key / 音色要推给网关（说话那条链路是宿主直连网关，插件不参与），
+// 只在值变化时推一次；空值表示"别改网关里已有的"。
+let lastSyncedSay = { key: '', voiceId: '' };
+async function syncSayConfig(conf) {
+  const apiKey = String(conf.breezeKey || '').trim();
+  const voiceId = String(conf.breezeVoiceId || '').trim();
+  if (!apiKey && !voiceId) return;
+  if (apiKey === lastSyncedSay.key && voiceId === lastSyncedSay.voiceId) return;
+  try {
+    const result = await callGateway(conf, '/say/config', {
+      method: 'POST',
+      body: { apiKey, voiceId }
+    });
+    lastSyncedSay = { key: apiKey, voiceId };
+    await log(`Breeze 配置已同步给网关：key=${result?.hasKey ? '有' : '空'} 音色=${result?.voiceId || '沿用'}`);
+  } catch (error) {
+    await log(`Breeze 配置同步失败：${describeError(error)}`, 'warn');
+  }
+}
+
 const tools = {
+
+  /** 查「说话」后端状态：在线、音色、余额。 */
+  say_status: async () => {
+    const conf = await loadConfig();
+    await syncSayConfig(conf);
+    const status = await callGateway(conf, '/say/status');
+    return {
+      ok: true,
+      online: Boolean(status.online),
+      engine: status.engine || '',
+      voiceId: status.voiceId || '',
+      hasKey: Boolean(status.hasKey),
+      balance: status.balance ?? null,
+      model: status.model || '',
+      note: status.note || (status.online ? '后端在线' : '后端不可用')
+    };
+  },
+
+  /** 列出可选音色（Breeze 云端）。 */
+  say_voices: async (args) => {
+    const conf = await loadConfig();
+    await syncSayConfig(conf);
+    const keyword = String(args?.keyword ?? '').trim();
+    const json = await callGateway(conf, '/say/voices');
+    const all = Array.isArray(json.items) ? json.items : [];
+    const items = (keyword ? all.filter((v) => String(v.name).includes(keyword)) : all).slice(0, 20);
+    return {
+      ok: true,
+      total: all.length,
+      keyword,
+      items: items.map((v) => ({ id: v.id, name: v.name })),
+      note: keyword && !items.length
+        ? `没有名字包含「${keyword}」的音色（共 ${all.length} 个）`
+        : '把想要的 id 填进插件设置「音色 id」即可'
+    };
+  },
+
 
   /**
    * 网易云扫码登录。控制台「扫码登录」按钮会以 {action:'start'|'poll'|'status'|'logout', channel:'console'} 调这个工具。
@@ -402,12 +468,23 @@ async function handleProbe(message) {
     const conf = await loadConfig();
     const health = await callGateway(conf, '/health').catch(() => null);
     const login = Boolean(health?.neteaseCookie);
+    // 顺便把「说话」后端状态带出去：插件页的徽标就能显示后端在不在线
+    const sayStatus = await callGateway(conf, '/say/status').catch(() => null);
+    const sayNote = sayStatus
+      ? (sayStatus.online
+        ? `说话后端在线${Number.isFinite(sayStatus.balance) ? `（额度 ${Math.round(sayStatus.balance)}）` : ''}`
+        : `说话后端离线：${sayStatus.note || '未知原因'}`)
+      : '说话后端连不上';
     send({
       id: message.id,
       result: {
         ok: true,
-        info: { login, uname: '网易云', note: login ? '已登录' : '未登录（只能唱免费曲）' },
-        loginInfo: { login, uname: '网易云', measuredAt: Date.now(), note: login ? '已登录' : '未登录' }
+        info: {
+          login,
+          uname: '网易云',
+          note: (login ? '已登录' : '未登录（只能唱免费曲）') + '；' + sayNote
+        },
+        loginInfo: { login, uname: '网易云', measuredAt: Date.now(), note: sayNote }
       }
     });
   } catch (error) {

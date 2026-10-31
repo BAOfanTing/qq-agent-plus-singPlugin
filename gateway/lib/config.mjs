@@ -9,19 +9,23 @@ export const DEFAULT_CONFIG = Object.freeze({
   // 音源：netease（网易云，默认）| local（你自己的音频目录）
   source: { type: 'netease', localDir: '', neteaseCookie: '', limit: 5 },
   // 换声：none（直出原音，用于先跑通链路）| command（调你自己的 RVC/SVC 命令行）
-  // 说话（TTS）：非点歌的文本走这里，默认用 Windows 自带语音
+  // 说话（TTS）：非点歌的文本走这里，只走 Breeze 云端
   say: {
-    engine: 'windows',
+    engine: 'breeze',
     voice: '',
     rate: 0,
     volume: 100,
     maxChars: 800,
     timeoutMs: 60000,
-    python: '',
-    pitch: 0,
     // 说话也用她的音色：TTS 之后再过一遍换声（多 10-20 秒）
-    postVoice: false,
-    postVoiceModel: ''
+    breezeUrl: 'https://api.breeze.blue',
+    breezeKey: '',
+    voiceId: '',
+    breezeModel: 'breeze-tts-2',
+    languageCode: '',
+    instructions: '',
+    guidanceScale: 0,
+    outputFormat: 'mp3_24000_128'
   },
   voice: { engine: 'none', command: '', timeoutMs: 600000, pitch: 0, outputExt: 'wav', defaultVoice: 'me',
            serveCommand: '', serveIdleMs: 600000, segmentSeconds: 30, gpuFraction: 0.9 },
@@ -80,16 +84,20 @@ export function normalizeConfig(raw, { rootDir = process.cwd() } = {}) {
     },
     // 说话：engine=none 关掉（宿主只能说文字）；windows=系统自带语音
     say: {
-      engine: ['none', 'windows', 'edge'].includes(asString(sayInput.engine)) ? asString(sayInput.engine) : DEFAULT_CONFIG.say.engine,
+      engine: ['none', 'breeze'].includes(asString(sayInput.engine)) ? asString(sayInput.engine) : DEFAULT_CONFIG.say.engine,
       voice: asString(sayInput.voice),
-      // edge 引擎用的 python（装了 edge-tts 的那个解释器）
-      python: asString(sayInput.python),
-      pitch: asInt(sayInput.pitch, 0, -200, 200),
       rate: asInt(sayInput.rate, DEFAULT_CONFIG.say.rate, -10, 10),
       volume: asInt(sayInput.volume, DEFAULT_CONFIG.say.volume, 0, 100),
       maxChars: asInt(sayInput.maxChars, DEFAULT_CONFIG.say.maxChars, 20, 5000),
-      postVoice: sayInput.postVoice === true,
-      postVoiceModel: asString(sayInput.postVoiceModel),
+      // Breeze 云端 TTS（api.breeze.blue）
+      breezeUrl: asString(sayInput.breezeUrl) || 'https://api.breeze.blue',
+      breezeKey: asString(sayInput.breezeKey),
+      voiceId: asString(sayInput.voiceId),
+      breezeModel: asString(sayInput.breezeModel) || 'breeze-tts-2',
+      languageCode: asString(sayInput.languageCode),
+      instructions: asString(sayInput.instructions),
+      guidanceScale: Number(sayInput.guidanceScale) >= 0 ? Number(sayInput.guidanceScale) : 0,
+      outputFormat: asString(sayInput.outputFormat) || 'mp3_24000_128',
       timeoutMs: asInt(sayInput.timeoutMs, DEFAULT_CONFIG.say.timeoutMs, 5000, 300000)
     },
     transcode: ['auto', 'never'].includes(asString(input.transcode)) ? asString(input.transcode) : DEFAULT_CONFIG.transcode,

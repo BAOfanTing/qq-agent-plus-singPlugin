@@ -20,8 +20,6 @@ function fillCommand(template, values) {
   return String(template)
     .replace(/\{maxSeconds\}/g, () => String(values.maxSeconds ?? 0))
     .replace(/\{segmentSeconds\}/g, () => String(values.segmentSeconds ?? 0))
-    // {extra} 原样插入（比如 --no-separate），不加引号
-    .replace(/\{extra\}/g, () => String(values.extra ?? ''))
     .replace(/\{(input|output|pitch|voice)\}/g, (_, key) => quote(values[key] ?? ''));
 }
 
@@ -114,7 +112,7 @@ export function createVoiceEngine(config) {
 
     return {
       name: 'resident',
-      async convert({ input, output, voice, maxSeconds = 0, onProgress = null, extra = '' }) {
+      async convert({ input, output, voice, maxSeconds = 0, onProgress = null }) {
         const child = ensure();
         const id = nextId++;
         const request = {
@@ -127,7 +125,7 @@ export function createVoiceEngine(config) {
           segmentSeconds: Math.max(0, Math.floor(Number(config.voice.segmentSeconds) || 0)),
           indexRate: 0.75,
           gpuFraction: Number(config.voice.gpuFraction) || 0,
-          noSeparate: String(extra || '').includes('--no-separate')
+          noSeparate: false
         };
         const done = new Promise((resolve, reject) => {
           pending.set(id, { resolve, reject, onProgress });
@@ -155,8 +153,7 @@ export function createVoiceEngine(config) {
         pitch: String(config.voice.pitch),
         voice: voice || config.voice.defaultVoice,
         maxSeconds: String(Math.max(0, Math.floor(Number(maxSeconds) || 0))),
-        segmentSeconds: String(Math.max(0, Math.floor(Number(config.voice.segmentSeconds ?? 75) || 0))),
-        extra: String(extra || '')
+        segmentSeconds: String(Math.max(0, Math.floor(Number(config.voice.segmentSeconds ?? 75) || 0)))
       };
       const command = fillCommand(config.voice.command, values);
       const timeoutMs = config.voice.timeoutMs;
@@ -218,16 +215,16 @@ export function createVoiceEngine(config) {
   return {
     name: 'command',
     voices: [config.voice.defaultVoice].filter(Boolean),
-    async convert({ input, output, voice, maxSeconds = 0, onProgress = null, extra = '' }) {
+    async convert({ input, output, voice, maxSeconds = 0, onProgress = null }) {
       // 常驻优先：省掉每次 8-12 秒的模型加载。任何失败都退回一次性进程。
       if (resident) {
         try {
-          return await resident.convert({ input, output, voice, maxSeconds, onProgress, extra });
+          return await resident.convert({ input, output, voice, maxSeconds, onProgress });
         } catch (error) {
           console.warn(`[voice] 常驻换声失败，退回一次性进程：${String(error?.message ?? error).slice(0, 160)}`);
         }
       }
-      return oneShot({ input, output, voice, maxSeconds, onProgress, extra });
+      return oneShot({ input, output, voice, maxSeconds, onProgress });
     },
     oneShot,
     shutdown: () => resident?.shutdown()

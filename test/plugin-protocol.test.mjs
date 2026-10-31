@@ -98,6 +98,26 @@ function gatewayScript() {
           })
         };
       }
+      if (url.pathname === '/say/status') {
+        return {
+          status: 200,
+          body: JSON.stringify({ ok: true, engine: 'breeze', online: true, hasKey: true, hasVoice: true,
+            voiceId: 'voc_test', model: 'breeze-tts-2', balance: 1362.4, note: '' })
+        };
+      }
+      if (url.pathname === '/say/voices') {
+        return {
+          status: 200,
+          body: JSON.stringify({ ok: true, items: [
+            { id: 'voc_a', name: '大肥鱼（迷糊版）' },
+            { id: 'voc_b', name: '大肥鱼（机灵版）' },
+            { id: 'voc_c', name: '哈基米娘' }
+          ] })
+        };
+      }
+      if (url.pathname === '/say/config') {
+        return { status: 200, body: JSON.stringify({ ok: true, hasKey: true, voiceId: 'voc_a' }) };
+      }
       if (url.pathname === '/health') {
         return { status: 200, body: JSON.stringify({ ok: true, engine: 'command', voices: ['me'], version: '0.1.0' }) };
       }
@@ -220,6 +240,67 @@ test('群文件开关默认关：sing_song 直接拒绝并指路语音条', asyn
     // 关着的时候不该调任何网关接口，也不该发文件
     assert.equal(harness.calls.some((c) => c.method === 'cap.http.request'), false);
     assert.equal(harness.calls.some((c) => c.method === 'cap.send.file'), false);
+  } finally {
+    harness.stop();
+  }
+});
+
+test('say_status：把网关的在线状态与额度原样报出来', async () => {
+  const harness = createHarness({ settings: SETTINGS, gateway: gatewayScript() });
+  try {
+    harness.init();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    harness.callTool('say_status', {}, { chatKey: 'group:1' });
+    const message = await harness.waitResult();
+    assert.equal(message.result.ok, true);
+    assert.equal(message.result.online, true);
+    assert.equal(message.result.voiceId, 'voc_test');
+    assert.equal(message.result.balance, 1362.4);
+    assert.equal(message.result.model, 'breeze-tts-2');
+  } finally {
+    harness.stop();
+  }
+});
+
+test('say_voices：按关键词过滤音色', async () => {
+  const harness = createHarness({ settings: SETTINGS, gateway: gatewayScript() });
+  try {
+    harness.init();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    harness.callTool('say_voices', { keyword: '大肥鱼' }, { chatKey: 'group:1' });
+    const message = await harness.waitResult();
+    assert.equal(message.result.ok, true);
+    assert.equal(message.result.total, 3);
+    assert.deepEqual(message.result.items.map((v) => v.id), ['voc_a', 'voc_b']);
+  } finally {
+    harness.stop();
+  }
+});
+
+test('插件填了 Breeze Key/音色会推给网关（POST /say/config）', async () => {
+  const settings = { ...SETTINGS, breezeVoiceId: 'voc_a' };
+  const script = gatewayScript();
+  const harness = createHarness({
+    settings,
+    gateway: ({ method, params }) => {
+      if (method === 'cap.config.get') return { settings };
+      if (method === 'cap.secrets.get') {
+        return { values: { apiToken: 'tok', breezeKey: 'brz_test' }, configured: ['apiToken', 'breezeKey'] };
+      }
+      return script({ method, params });
+    }
+  });
+  try {
+    harness.init();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    harness.callTool('say_status', {}, { chatKey: 'group:1' });
+    await harness.waitResult();
+    const push = harness.calls.find((c) => c.method === 'cap.http.request'
+      && String(c.params?.url || '').endsWith('/say/config'));
+    assert.ok(push, '应该向网关推 /say/config');
+    const body = JSON.parse(String(push.params.body || '{}'));
+    assert.equal(body.apiKey, 'brz_test');
+    assert.equal(body.voiceId, 'voc_a');
   } finally {
     harness.stop();
   }

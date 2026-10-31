@@ -9,7 +9,7 @@ import { createVoiceEngine } from './voice.mjs';
 import { transcodeTo, probeSeconds } from './audio.mjs';
 import { createSayEngine } from './say.mjs';
 
-export const VERSION = '1.0.2';
+export const VERSION = '1.0.3';
 const WEB_DIR = path.join(import.meta.dirname, '..', 'web');
 const NETEASE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const MAX_BODY_BYTES = 8 * 1024;
@@ -224,6 +224,21 @@ export function createApp({
   // 否则重启一次就退回 config 默认值，表现是"插件设了 240 却只唱 90"。
   const runtimeStateFile = path.join(config.dataDir ? path.resolve(config.dataDir) : filesDir, 'runtime.json');
   let runtimeVoiceSeconds = null;   // null = 没设过（用 config 默认）；0 = 整首
+
+  /** 把运行期设置写回 state 文件（插件推上来的值要能扛住重启）。 */
+  const saveRuntimeState = () => {
+    try {
+      fs.mkdirSync(path.dirname(runtimeStateFile), { recursive: true });
+      const payload = { voiceSeconds: runtimeVoiceSeconds };
+      const creds = typeof say.credentials === 'function' ? say.credentials() : {};
+      if (creds.apiKey) payload.sayKey = creds.apiKey;
+      if (creds.voiceId) payload.sayVoiceId = creds.voiceId;
+      fs.writeFileSync(runtimeStateFile, JSON.stringify(payload, null, 2));
+    } catch (error) {
+      console.warn(`[state] 保存失败：${String(error?.message ?? error)}`);
+    }
+  };
+
   try {
     if (fs.existsSync(runtimeStateFile)) {
       const saved = JSON.parse(fs.readFileSync(runtimeStateFile, 'utf8'));
@@ -231,6 +246,12 @@ export function createApp({
       if (Number.isFinite(savedSeconds) && savedSeconds >= 0) {
         runtimeVoiceSeconds = savedSeconds;
         console.log(`  语音条时长（来自上次设置）：${savedSeconds === 0 ? '整首' : `${savedSeconds} 秒`}`);
+      }
+      if (saved?.sayKey || saved?.sayVoiceId) {
+        if (typeof say.setCredentials === 'function') {
+          say.setCredentials({ apiKey: saved.sayKey, voiceId: saved.sayVoiceId });
+          console.log('  说话（Breeze）：已载入上次保存的 Key/音色');
+        }
       }
     }
   } catch { /* 状态文件坏了就当没有 */ }
@@ -343,8 +364,8 @@ export function createApp({
   };
 
   /**
-   * 把一段话读成语音条（不走 GPU 队列：TTS 是 CPU 活，几秒就完，没必要排队）。
-   * 输出统一转成 mp3 单声道 96k，天然在宿主 4MB 限内。
+   * 把一段话读成语音条（不走 GPU 队列：云端 TTS 几秒就完，没必要排队）。
+   * Breeze 直接返回 mp3，不再做任何转码 —— 少一道工序就少一个失败点。
    */
   async function handleSay(req, res, text) {
     const startedAt = Date.now();
@@ -353,56 +374,16 @@ export function createApp({
     try {
       spoke = await say.convert({ text, output: raw });
     } catch (error) {
-      throw Object.assign(new Error(`读这段话失败：${String(error?.message ?? error).slice(0, 200)}`),
-        { code: error?.code || 'E_SAY' });
+      const code = String(error?.code || 'E_SAY');
+      // 401/额度类错误原样带出去：使用者最需要知道的是"Key 不对"还是"没钱了"
+      throw Object.assign(new Error(`读这段话失败：${String(error?.message ?? error).slice(0, 240)}`), { code });
     }
 
-    // 可选：把 TTS 结果再过一遍换声，用她的音色说话（RVC 是"换音色"，不能纯文字生成，
-    // 所以必须先 TTS 再换声）。代价是每句多 10-20 秒（模型加载 + 推理）。
-    // TTS 引擎可能直接产出 mp3（edge），以它返回的 file 为准
-    let spoken = spoke.file || raw;
-    if (config.say.postVoice && voice.name !== 'none') {
-      const converted = path.join(tmpDir, `say-conv-${Date.now()}.wav`);
-      try {
-        await voice.convert({
-          // 用引擎实际产出的文件（edge 是 mp3，SAPI 是 wav），别写死 raw
-          input: spoken,
-          output: converted,
-          voice: config.say.postVoiceModel || '',
-          maxSeconds: 0,
-          // 说话本身就是干净人声，跳过分离（分离模型对语音没意义，还白等）
-          extra: '--no-separate'
-        });
-        if (fs.existsSync(converted) && fs.statSync(converted).size > 1000) {
-          spoken = converted;
-          console.log(`[say] 已用音色「${config.say.postVoiceModel || voice.voices?.[0] || '默认'}」重说一遍`);
-        }
-      } catch (error) {
-        // 换声失败不该让"说话"整单失败：退回 TTS 原声
-        console.warn(`[say] 换声失败，发 TTS 原声：${String(error?.message ?? error).slice(0, 140)}`);
-      }
-    }
-
-    const mp3 = path.join(tmpDir, `say-${Date.now()}.mp3`);
-    let out = spoken;
-    let contentType = 'audio/wav';
-    // edge 引擎直接产出 mp3（神经语音），不用再转一遍
-    if (/\.mp3$/i.test(spoken)) {
-      out = spoken;
-      contentType = 'audio/mpeg';
-    }
-    try {
-      const ok = contentType === 'audio/mpeg' ? false : await transcodeTo(spoken, mp3, { ext: 'mp3' });
-      if (ok && fs.existsSync(mp3) && fs.statSync(mp3).size > 1000) {
-        out = mp3;
-        contentType = 'audio/mpeg';
-      }
-    } catch (error) {
-      console.warn(`[say] 转 mp3 失败，退回 wav：${String(error?.message ?? error).slice(0, 120)}`);
-    }
-
-    const buffer = fs.readFileSync(out);
-    const probed = Math.round(await probeSeconds(out)) || 0;
+    const buffer = fs.readFileSync(spoke.file);
+    const contentType = spoke.format === 'wav' ? 'audio/wav'
+      : spoke.format === 'mp3' ? 'audio/mpeg'
+        : spoke.format === 'opus' ? 'audio/ogg' : 'application/octet-stream';
+    const probed = Math.round(await probeSeconds(spoke.file)) || 0;
     // 探不到时长就按中文语速估（约 4.5 字/秒），别报 0 让宿主又说"才一秒"
     const seconds = probed > 0 ? probed : Math.max(1, Math.round(spoke.chars / 4.5));
     console.log(`[say] ${spoke.chars} 字 → ${seconds} 秒（${Math.round(buffer.length / 1024)} KB，${Date.now() - startedAt}ms）`);
@@ -412,10 +393,7 @@ export function createApp({
       'x-audio-seconds': String(seconds)
     });
     res.end(buffer);
-    // 临时文件立刻清掉（成品目录里不需要留）
-    for (const file of [raw, spoken, mp3]) {
-      try { fs.rmSync(file, { force: true }); } catch { /* 忽略 */ }
-    }
+    try { fs.rmSync(spoke.file, { force: true }); } catch { /* 忽略 */ }
   }
 
   const handler = async (req, res) => {
@@ -553,7 +531,7 @@ export function createApp({
           if (say.name === 'none') {
             throw Object.assign(new Error(
               '这个网关既没接换声唱歌、也没开 TTS（config.say.engine = none）。'
-              + '想让机器人说话就把 say.engine 设成 windows；想让它唱，就用「唱：歌名」的格式调用。'
+              + '想让机器人说话请把 say.engine 设成 breeze（并在插件里填 API Key）；想让它唱，就用「唱：歌名」的格式调用。'
             ), { code: 'E_NOT_TTS' });
           }
           await handleSay(req, res, input);
@@ -642,6 +620,37 @@ export function createApp({
         return;
       }
 
+      // ── 说话（Breeze）──────────────────────────────────────
+      // 插件页要显示「后端在线」+ 音色列表 + 余额，所以这三个口都给插件用（Bearer 鉴权）。
+      if (pathname === '/say/status' && req.method === 'GET') {
+        const fresh = url.searchParams.get('fresh') === '1';
+        sendJson(res, 200, { ok: true, ...(await say.status({ fresh })) });
+        return;
+      }
+
+      if (pathname === '/say/voices' && req.method === 'GET') {
+        try {
+          const items = await say.listVoices();
+          sendJson(res, 200, { ok: true, items });
+        } catch (error) {
+          sendJson(res, 502, { ok: false, message: String(error?.message ?? error).slice(0, 240) });
+        }
+        return;
+      }
+
+      // 插件把设置里的 Breeze Key / 音色推上来（幂等；空值表示"别改这一项"）
+      if (pathname === '/say/config' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        if (typeof say.setCredentials === 'function') {
+          say.setCredentials({ apiKey: body.apiKey, voiceId: body.voiceId });
+        }
+        saveRuntimeState();
+        const creds = typeof say.credentials === 'function' ? say.credentials() : {};
+        console.log(`[say] 配置已更新：key=${creds.apiKey ? '已设置' : '空'} 音色=${creds.voiceId || '空'}`);
+        sendJson(res, 200, { ok: true, hasKey: Boolean(creds.apiKey), voiceId: creds.voiceId || '' });
+        return;
+      }
+
       // 插件把设置里的「语音条秒数」推上来（幂等，随便多调几次没关系）
       if (pathname === '/admin/voice-seconds' && req.method === 'POST') {
         const body = await readJsonBody(req);
@@ -650,12 +659,7 @@ export function createApp({
         // 0 = 整首；其余夹在 5..cap
         const seconds = raw === 0 ? 0 : Math.min(cap, Math.max(5, raw));
         runtimeVoiceSeconds = seconds;
-        try {
-          fs.mkdirSync(path.dirname(runtimeStateFile), { recursive: true });
-          fs.writeFileSync(runtimeStateFile, JSON.stringify({ voiceSeconds: seconds }, null, 2));
-        } catch (error) {
-          console.warn(`[admin] 保存语音条时长失败：${String(error?.message ?? error)}`);
-        }
+        saveRuntimeState();
         console.log(`[admin] 语音条默认时长设为 ${seconds === 0 ? '整首（不裁剪）' : `${seconds} 秒`}`);
         sendJson(res, 200, { ok: true, seconds, cap });
         return;

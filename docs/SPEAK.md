@@ -1,95 +1,108 @@
 # 说话（TTS）
 
-宿主的 `send_voice` 指向本网关之后，机器人**所有**语音请求都会打到 `/v1/audio/speech`。
-这个端点因此同时承担两件事：
+宿主的 `send_voice` 指向本网关后，机器人**所有**语音请求都会打到 `/v1/audio/speech`：
 
-| 输入 | 走什么 | 耗时（RTX 3080，常驻换声） |
+| 输入 | 走什么 | 耗时（实测） |
 |---|---|---|
-| 含点歌意图（`唱：歌名`、`点歌唱…`、句中触发） | 换声唱歌（GPU，整首自动分段） | 12 秒（45 秒成品）/ 22 秒（整首 3:54） |
-| 其它文本 | **说话**（下面的 `say` 引擎） | **3 秒**（首句 12-13 秒，要加载换声模型） |
+| 含点歌意图（`唱：歌名`、`点歌唱…`、句中触发） | 换声唱歌（本机 GPU，整首自动分段） | 12 秒（45 秒成品）/ 22 秒（整首 3:54） |
+| 其它文本 | **说话**：Breeze TTS 2 云端（`api.breeze.blue`） | **3-6 秒** |
 
-> 唱歌那条路见 [TUNING.md](TUNING.md)；这里只讲"说话"。
+唱歌那条路见 [TUNING.md](TUNING.md)。这里只讲"说话"。
 
-## 三档引擎
+## 为什么只用 Breeze 云端
 
-配置在 `gateway/config.json` 的 `say.engine`：
+| 方案 | 音质 | 占显存 | 成本 | 结论 |
+|---|---|---|---|---|
+| Windows SAPI（系统语音） | 机械，没法听 | 0 | 免费 | ❌ 已删 |
+| Edge TTS（edge-tts） | 接近真人 | 0 | 免费 | ❌ 已删（要多装一套 Python 环境，音色也固定） |
+| **Breeze TTS 2 云端** | 开源权重里最好（官方 #1），50 个音色 | **0** | 按字符计费 | ✅ **当前方案** |
+| Breeze 本地权重 | 同上 | 7.7 G | 免费但要下 7 GB | ⏸ 可选（和唱歌抢显存） |
 
-| 引擎 | 拟人度 | 一句耗时 | 需要 |
-|---|---|---|---|
-| `windows` | 😑 机械（SAPI Huihui/Yaoyao/Kangkang） | 0.6 秒 | 无，系统自带 |
-| **`edge`（默认）** | 🙂 **接近真人**（微软神经语音） | 2-3 秒 | 联网 + `edge-tts` |
-| 任意 + `postVoice: true` | 🙂 语气来自 TTS、**音色是你的** | +1-3 秒（常驻） | 额外跑一遍 RVC |
+云端最大的好处：**不占显卡**，所以唱歌（RVC）和说话可以同时用，不需要互斥调度。
 
-Windows 自带的 SAPI 只有三代老语音，"自然语音"包只提供给"讲述人"、程序里拿不到，
-所以想拟人就走 `edge`。
+## 插件里配（推荐）
 
-## 配置
+控制台 → 插件 → 点歌唱歌 → **「说话（Breeze 云端）」** 分组：
+
+| 设置 | 说明 |
+|---|---|
+| **Breeze API Key** | `brz_xxxx`，在 Breeze 控制台 → API Keys 生成。加密保存在宿主，不回显明文 |
+| **音色 id** | 如 `voc_8yud7hz7c9q2`（大肥鱼·迷糊版）。不知道 id 就群里问「列出说话音色」 |
+
+填完立刻生效（插件把值推给网关 `POST /say/config`，网关落盘，重启也在）。
+
+**插件页会显示后端状态**：点「检测登录」或让机器人跑一次，徽标会显示
+「说话后端在线（额度 1362）」或「说话后端离线：API Key 不对」。
+
+## 音色怎么查
+
+```bash
+# 网关侧（用网关令牌）
+curl -H "authorization: Bearer <网关令牌>" https://<网关地址>/say/voices
+
+# 或直连 Breeze
+curl -H "xi-api-key: brz_xxx" https://api.breeze.blue/v1/voices
+```
+
+群里也可以直接问「**有哪些说话音色**」→ 机器人调 `say_voices`（支持按名字过滤）。
+
+## 网关侧配置（`gateway/config.json`）
 
 ```json
 "say": {
-  "engine": "edge",                        // edge | windows | none
-  "voice": "zh-CN-XiaoxiaoNeural",         // 见下面「音色」
-  "python": "E:/Cache/qq-agent/tts-venv/Scripts/python.exe",   // 装了 edge-tts 的解释器
-  "rate": 0,                               // -10~10（edge 映射成 ±10%）
-  "pitch": 0,                              // -200~200 Hz（仅 edge）
-  "volume": 100,
-  "maxChars": 800,                         // 超长截断（宿主本身只给 300 字左右）
-  "timeoutMs": 60000,
-  "postVoice": false,                      // true = TTS 后再过一遍换声，用你的音色
-  "postVoiceModel": ""                     // 留空 = voice.defaultVoice
+  "engine": "breeze",                        // breeze | none
+  "breezeUrl": "https://api.breeze.blue",
+  "breezeKey": "brz_xxxx",                   // 插件填过就以插件为准
+  "voiceId": "voc_8yud7hz7c9q2",
+  "breezeModel": "breeze-tts-2",
+  "languageCode": "zh",
+  "instructions": "",                        // 可选：语气/情绪/节奏，用中文写
+  "guidanceScale": 4.0,                      // 可选：指令遵循强度
+  "outputFormat": "mp3_24000_128",
+  "maxChars": 800,                           // 超长截断（宿主本身只给 300 字左右）
+  "timeoutMs": 120000
 }
 ```
 
-## 安装 edge-tts（一次就好）
+接口形状（官方 `openapi.json`，ElevenLabs 风格）：
 
-```powershell
-python -m venv E:\Cache\qq-agent\tts-venv
-E:\Cache\qq-agent\tts-venv\Scripts\python.exe -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple edge-tts
+```
+POST {baseUrl}/v1/text-to-speech/{voiceId}?output_format=mp3_24000_128&delivery=sync
+header: xi-api-key: <key>          ← 不是 Bearer
+body:  { text, model_id, language_code?, instructions?, voice_settings: { guidance_scale } }
+→ 200 audio/mpeg
 ```
 
-> 直连 PyPI 在国内常会卡死，用清华源 40 秒装完。
+## 网关给插件用的三个接口
 
-列可用音色：
-
-```powershell
-E:\Cache\qq-agent\tts-venv\Scripts\python.exe -m edge_tts --list-voices
-```
-
-### 常用中文音色
-
-| 语音名 | 特点 |
+| 接口 | 用途 |
 |---|---|
-| `zh-CN-XiaoxiaoNeural` | 晓晓，温柔自然（默认） |
-| `zh-CN-XiaoyiNeural` | 晓伊，更活泼、少女感 |
-| `zh-CN-YunxiNeural` | 云希，男声 |
-| `zh-CN-YunyangNeural` | 云扬，男声，播音腔 |
-| `zh-CN-liaoning-XiaobeiNeural` | 东北话 |
-| `zh-CN-shaanxi-XiaoniNeural` | 陕西话 |
+| `GET /say/status` | `{ online, hasKey, hasVoice, voiceId, balance, note }` —— 插件页"后端在线"就是它 |
+| `GET /say/voices` | 音色列表（转发 Breeze） |
+| `POST /say/config` | `{ apiKey?, voiceId? }` 插件推配置上来；空值表示"别改这一项" |
 
-## 用你的音色说话（`postVoice`）
+## 计费与限制
 
-**RVC 不能纯文字生成语音** —— 它是"声音转换"：输入是音频（决定说什么），只换音色。
-所以必须两段式：
+实测约 **0.186 额度/字符**（36 字扣 6.7）。免费注册送 1400 额度 → 约 **250 句**短话。
 
-```
-文字 ──edge TTS（决定说什么）──► 音频 ──RVC（换成你的音色）──► 语音条
-```
+免费版（`/v1/entitlements`）：
 
-打开 `say.postVoice: true` 即可。开了之后：
+| 项 | 值 |
+|---|---|
+| 并发 | 2 |
+| 可保存音色 | 5 |
+| **商用** | `commercial_use_allowed: false` ← 官方许可仅研究/非商用 |
 
-- 音色是你的，但**语气/节奏仍来自 TTS**（想要连语气都像你，得训一个真 TTS 模型，
-  例如 GPT-SoVITS / Bert-VITS2 / CosyVoice，那是另一个量级的工程，本仓库不做）
-- 换声走**常驻进程**（见 [TUNING.md](TUNING.md) 的「常驻换声」），所以一句只多 1-3 秒；
-  常驻进程没起来时第一句会多 10 秒左右
-- 换声失败会**自动退回 TTS 原声**，不会因为换声挂了就发不出语音
+查余额：`curl -H "xi-api-key: brz_xxx" https://api.breeze.blue/v1/balance`
 
-## 故障与注意
+## 排错
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| `say.engine = edge` 但语音还是机械的 | 没装 edge-tts 或 `say.python` 指错 → 看网关日志 `[say] Edge 合成失败，退回系统语音` |
-| 发声很慢（10 秒以上） | 常驻换声进程没起来（`voice.serveCommand` 为空或启动失败）→ 日志里找 `[voice] 常驻换声进程已启动` |
-| 宿主报 `HTTP 524` | 语音条通道走了 Cloudflare 快速隧道（约 100 秒限制）→ 改用本机 8898 专线，见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
-| 说话没声音 / 音频极小 | 检查 `maxChars`（别设太小）与网关日志里的 `[say] N 字 → M 秒` |
+| `说话后端离线：API Key 不对` | `xi-api-key` 的值要完整（带 `brz_` 前缀）；确认 Key 没被禁用/撤销 |
+| 机器人还是发文字 | 插件设置里 Key/音色填了没；再看网关日志里有没有 `[say] N 字 → M 秒` |
+| `Breeze 返回 402/429` | 额度不足或撞频率限制 → 查 `/v1/balance` |
+| 宿主报 `HTTP 524` | 语音条通道走了 Cloudflare 快速隧道（约 100 秒限制）→ 改本机 8898 专线，见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
+| 机器人唱不了歌 | 那是唱歌链路，看 [TUNING.md](TUNING.md) |
 
-`/health` 里能直接看到当前引擎：`"say": "edge"` / `"windows"` / `"none"`。
+`/health` 里能看到当前引擎：`"say": "breeze"`。

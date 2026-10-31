@@ -1,1 +1,6 @@
-{"gatewayUrl": "https://sing.example.com", "defaultVoice": "me", "maxSeconds": 60, "pollIntervalMs": 1000}
+{
+  "gatewayUrl": "https://your-tunnel.trycloudflare.com",
+  "apiToken": "dev-token",
+  "breezeVoiceId": "voc_8yud7hz7c9q2",
+  "voiceSeconds": 0
+}

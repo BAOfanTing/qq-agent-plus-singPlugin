@@ -12,14 +12,14 @@
 **免鉴权**（方便排查隧道通不通），只暴露"在不在、什么引擎"：
 
 ```json
-{ "ok": true, "version": "1.0.2",
+{ "ok": true, "version": "1.0.3",
   "engine": "command", "say": "windows", "voiceConfigured": true, "voices": ["hanser"],
   "source": "netease", "transcode": "auto", "jobs": 0,
   "voiceSeconds": 0, "voiceFullSong": true, "voiceMaxSeconds": 600, "jobMaxSeconds": 600 }
 ```
 
 - `engine` / `voices` —— 换声引擎与可用音色（`engine: "none"` 表示没接换声，只能搬运音源）
-- `say` —— 说话引擎（`windows` = 系统自带语音；`none` = 关掉）
+- `say` —— 说话引擎（`breeze` = Breeze TTS 2 云端；`none` = 关掉）
 - `voiceSeconds` —— 语音条当前生效时长（`0` + `voiceFullSong: true` = 整首）
 - `voiceMaxSeconds` / `jobMaxSeconds` —— 两道上限，插件推的值会被它们夹住
 

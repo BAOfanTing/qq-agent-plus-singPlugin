@@ -221,12 +221,9 @@ cp config.example.json config.json
 | `voice.serveCommand` | 常驻换声命令（`"<rvc的python>" "<仓库>/sing-model/run.py" --serve`）；留空 = 每次起进程 |
 | `voice.serveIdleMs` | 常驻进程空闲多久自动退出，默认 600000（10 分钟） |
 | `voice.gpuFraction` | 常驻进程的显存上限比例，默认 0.9 |
-| `say.engine` | `edge`（微软神经语音，**默认**，需联网 + edge-tts）/ `windows`（系统自带，机械）/ `none`（关掉只说文字） |
-| `say.python` | `edge` 引擎用的解释器路径（装了 edge-tts 的那个 venv） |
-| `say.pitch` | 音高偏移 Hz（仅 edge，-200~200） |
+| `say.engine` | `breeze`（云端 Breeze TTS 2，**唯一实现**）/ `none`（关掉，只说文字） |
+| `say.breezeKey` / `say.voiceId` | Breeze API Key 与音色 id；**在插件设置里填更省事**（插件会推到网关） |
 | `say.voice` | 语音名，留空用系统默认（中文系统一般是 `Microsoft Huihui Desktop`） |
-| `say.postVoice` | `true` = TTS 之后再过一遍换声，用她的音色说话（每句多 10-20 秒） |
-| `say.postVoiceModel` | 换声用的音色名，留空 = `voice.defaultVoice` |
 | `filesTtlHours` | 成品保留小时数（默认 24，另有每天 0 点清理） |
 
 本机这套的实际配置（供对照）：

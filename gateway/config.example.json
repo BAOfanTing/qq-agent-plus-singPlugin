@@ -24,14 +24,17 @@
   "dataDir": "gateway-run",
   "say": {
     "engine": "edge",
-    "voice": "zh-CN-XiaoxiaoNeural",
     "rate": 0,
     "volume": 100,
     "maxChars": 800,
     "timeoutMs": 60000,
-    "postVoice": false,
-    "postVoiceModel": "",
-    "python": "E:/Cache/qq-agent/tts-venv/Scripts/python.exe",
-    "pitch": 0
+    "breezeUrl": "https://api.breeze.blue",
+    "breezeKey": "",
+    "voiceId": "",
+    "breezeModel": "breeze-tts-2",
+    "languageCode": "zh",
+    "instructions": "",
+    "guidanceScale": 4.0,
+    "outputFormat": "mp3_24000_128"
   }
 }
