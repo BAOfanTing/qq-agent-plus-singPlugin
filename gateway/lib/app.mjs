@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { createJobQueue } from './jobs.mjs';
 import { createSource } from './sources.mjs';
 import { createVoiceEngine } from './voice.mjs';
-import { transcodeTo, probeSeconds, shiftPitch, runProcess } from './audio.mjs';
+import { transcodeTo, probeSeconds, shiftPitch, concatAudio, runProcess } from './audio.mjs';
 import { createSayEngine } from './say.mjs';
 
 export const VERSION = '1.0.4';
@@ -550,6 +550,44 @@ export function createApp({
   };
 
   /**
+   * 把一段话切成适合单次合成的句子。
+   *
+   * 为什么切：Breeze 一次生成多句长文本时，音高会句间漂移（实测 12 秒回复里
+   * 340→396→380→340 Hz），整段一次音高归一救不了段内漂移。切句后逐句归一就齐了。
+   */
+  const splitSayText = (text, maxChars) => {
+    const clean = String(text ?? '').replace(/\s+/g, ' ').trim();
+    if (!clean) return [];
+    // 先按句末标点切，再把过长的句子按逗号补切
+    const rough = clean.split(/(?<=[。！？!?…；;\n])/).map((x) => x.trim()).filter(Boolean);
+    // 把短句按 maxChars 打包，减少合成次数（每段都要跑一次模型，很贵）
+    const out = [];
+    let buffer = '';
+    const flush = () => { if (buffer.trim()) { out.push(buffer.trim()); buffer = ''; } };
+    for (const piece of rough) {
+      if (buffer && (buffer.length + piece.length) > maxChars) flush();
+      if (piece.length > maxChars) {
+        flush();
+        let rest = piece;
+        while (rest.length > maxChars) {
+          let idx = -1;
+          for (let i = 0; i <= Math.min(maxChars, rest.length - 1); i += 1) {
+            if ('，,、'.includes(rest[i])) idx = i;
+          }
+          const at = idx > 0 ? idx + 1 : Math.min(maxChars, rest.length);
+          out.push(rest.slice(0, at).trim());
+          rest = rest.slice(at).trim();
+        }
+        if (rest) out.push(rest);
+      } else {
+        buffer += piece;
+      }
+    }
+    flush();
+    return out.length ? out : [clean];
+  };
+
+  /**
    * 把一段话读成语音条（不走 GPU 队列：云端 TTS 几秒就完，没必要排队）。
    * Breeze 直接返回 mp3，不再做任何转码 —— 少一道工序就少一个失败点。
    */
@@ -557,18 +595,44 @@ export function createApp({
     const startedAt = Date.now();
     clearLocalIdle();                                 // 有请求进来就别再倒计时
     await resumeLocalSay();
-    const raw = path.join(tmpDir, `say-${Date.now()}.wav`);
+
+    // 长回复切句：逐句合成 + 逐句音高归一，再拼回一条
+    const chunks = config.say.splitSentences
+      ? splitSayText(text, Number(config.say.maxSegmentChars) || 30)
+      : [String(text ?? '')];
+    const tempFiles = [];
     let spoke;
     try {
-      spoke = await say.convert({ text, output: raw });
+      if (chunks.length > 1) {
+        console.log(`[say] 切成 ${chunks.length} 句逐句合成（避免音高漂移）`);
+        const parts = [];
+        for (let i = 0; i < chunks.length; i += 1) {
+          const partRaw = path.join(tmpDir, `say-${Date.now()}-${i}.wav`);
+          const part = await say.convert({ text: chunks[i], output: partRaw });
+          tempFiles.push(part.file);
+          const normalizedPart = await pitchNormalize(part.file);
+          if (normalizedPart !== part.file) tempFiles.push(normalizedPart);
+          parts.push(normalizedPart);
+        }
+        const merged = path.join(tmpDir, `say-${Date.now()}-merged.wav`);
+        const ok = await concatAudio(parts, merged, { ext: 'wav' });
+        if (!ok) throw Object.assign(new Error('分段合成后拼接失败'), { code: 'E_SAY_CONCAT' });
+        tempFiles.push(merged);
+        spoke = { file: merged, bytes: fs.statSync(merged).size, chars: String(text ?? '').length, format: 'wav' };
+      } else {
+        const raw = path.join(tmpDir, `say-${Date.now()}.wav`);
+        spoke = await say.convert({ text, output: raw });
+        tempFiles.push(spoke.file);
+        const normalized = await pitchNormalize(spoke.file);
+        if (normalized !== spoke.file) { tempFiles.push(normalized); spoke.file = normalized; }
+        spoke.format = /mp3$/i.test(spoke.file) ? 'mp3' : spoke.format;
+      }
     } catch (error) {
       const code = String(error?.code || 'E_SAY');
+      for (const f of tempFiles) { try { fs.rmSync(f, { force: true }); } catch { /* 忽略 */ } }
       // 401/额度类错误原样带出去：使用者最需要知道的是"Key 不对"还是"没钱了"
       throw Object.assign(new Error(`读这段话失败：${String(error?.message ?? error).slice(0, 240)}`), { code });
     }
-
-    const normalized = await pitchNormalize(spoke.file);
-    if (normalized !== spoke.file) spoke.file = normalized;
 
     const buffer = fs.readFileSync(spoke.file);
     const contentType = spoke.format === 'wav' ? 'audio/wav'
@@ -584,7 +648,9 @@ export function createApp({
       'x-audio-seconds': String(seconds)
     });
     res.end(buffer);
-    try { fs.rmSync(spoke.file, { force: true }); } catch { /* 忽略 */ }
+    for (const f of new Set([...tempFiles, spoke.file])) {
+      try { fs.rmSync(f, { force: true }); } catch { /* 忽略 */ }
+    }
     armLocalIdle();                                   // 说完开始闲置倒计时
   }
 

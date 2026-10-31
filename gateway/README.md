@@ -35,6 +35,7 @@ curl -s http://127.0.0.1:8899/health # 自检
 | `say.cfgScale` | 指令遵循强度（参考克隆时会被压到 1，模板不支持 CFG） |
 | `say.localPython` / `localModelDir` / `localAppDir` | 本地模型由网关自己起停时用 |
 | `say.localIdleMs` | 本地模型闲置多久退出（默认 60000 = 1 分钟；0 = 常驻） |
+| `say.splitSentences` / `maxSegmentChars` | 长文本按句切开逐句合成再拼回（默认 true / 20 字），避免句间音高漂移 |
 | `say.pitchTarget` / `pitchMaxShift` | 音高归一：把每句基频拉到目标 Hz（0 = 关），最大改动半音数（默认 3；本地偶有飘 3+ 半音，建议 6） |
 | `say.breezeKey` / `voiceId` | 云端 API Key 与音色 id（插件里填会推上来并落盘） |
 | `transcode` | `auto`（有 ffmpeg 就转 mp3 并裁到 maxSeconds）或 `never`（原样发） |

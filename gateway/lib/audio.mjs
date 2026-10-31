@@ -162,3 +162,31 @@ export async function shiftPitch(input, output, ratio, { ext = 'mp3', bitrate = 
     return false;
   }
 }
+
+/**
+ * 把多段音频首尾相接成一段（各段格式可以不同：wav/mp3 混着也行）。
+ *
+ * 为什么要分段再拼：Breeze 一次生成多句长文本时，音高会句间漂移
+ * （实测 12 秒回复里 340→396→380→340 Hz，差 2.5 个半音），
+ * 整段做一次音高归一救不了段内漂移；切句逐段归一才拉得齐。
+ */
+export async function concatAudio(files, output, { ext = 'wav' } = {}) {
+  const bin = await detectFfmpeg();
+  if (!bin || files.length === 0) return false;
+  if (files.length === 1) {
+    try { fs.copyFileSync(files[0], output); return true; } catch { return false; }
+  }
+  const args = ['-y'];
+  for (const file of files) args.push('-i', file);
+  const filter = `${files.map((_, i) => `[${i}:a]`).join('')}concat=n=${files.length}:v=0:a=1[out]`;
+  args.push('-filter_complex', filter, '-map', '[out]');
+  if (ext === 'mp3') args.push('-c:a', 'libmp3lame', '-b:a', '96k');
+  else args.push('-c:a', 'pcm_s16le', '-ar', '24000', '-ac', '1');
+  args.push(output);
+  try {
+    await runProcess(bin, args, { timeoutMs: 180000 });
+    return true;
+  } catch {
+    return false;
+  }
+}

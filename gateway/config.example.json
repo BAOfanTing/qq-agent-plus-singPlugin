@@ -49,6 +49,8 @@
     "localAppDir": "<仓库路径>/say-model",
     "localIdleMs": 60000,
     "pitchTarget": 0,
-    "pitchMaxShift": 6
+    "pitchMaxShift": 6,
+    "splitSentences": true,
+    "maxSegmentChars": 20
   }
 }

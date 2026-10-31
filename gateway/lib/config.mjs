@@ -111,6 +111,9 @@ export function normalizeConfig(raw, { rootDir = process.cwd() } = {}) {
       // 音高归一：把每句的中位基频拉到这个 Hz（0 = 关闭）
       pitchTarget: asInt(sayInput.pitchTarget, 0, 0, 600),
       pitchMaxShift: Number(sayInput.pitchMaxShift) > 0 ? Number(sayInput.pitchMaxShift) : 3,
+      // 长文本切句：逐句合成 + 逐句音高归一，避免句间音高漂移
+      splitSentences: sayInput.splitSentences !== false,
+      maxSegmentChars: asInt(sayInput.maxSegmentChars, 30, 8, 200),
       // 唱歌前停掉本地 TTS / 说话前拉起来（命令留空 = 不调度）
       localPython: asString(sayInput.localPython),
       localModelDir: asString(sayInput.localModelDir),
