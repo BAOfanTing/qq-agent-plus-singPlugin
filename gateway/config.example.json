@@ -23,7 +23,7 @@
   "filesTtlHours": 24,
   "dataDir": "gateway-run",
   "say": {
-    "engine": "edge",
+    "engine": "auto",
     "rate": 0,
     "volume": 100,
     "maxChars": 800,
@@ -48,9 +48,14 @@
     "localModelDir": "<仓库路径>/say-model/weights/breeze-tts-2",
     "localAppDir": "<仓库路径>/say-model",
     "localIdleMs": 60000,
-    "pitchTarget": 0,
-    "pitchMaxShift": 6,
+    "pitchTarget": 355,
+    "pitchMaxShift": 2.5,
     "splitSentences": false,
-    "maxSegmentChars": 20
+    "maxSegmentChars": 20,
+    "registerMin": 330,
+    "registerMax": 385,
+    "registerRetries": 2,
+    "registerRetryMaxSeconds": 12,
+    "breezeKeys": []
   }
 }

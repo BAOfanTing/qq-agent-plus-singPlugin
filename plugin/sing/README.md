@@ -40,7 +40,7 @@
 
 插件**不写任何外部账号数据**、不发文字消息、不调模型，所以没有 `approval` / `quota` 声明。
 
-## 七个工具
+## 八个工具
 
 | 工具（模型看到的全名） | 参数 | 行为 |
 |---|---|---|
@@ -49,6 +49,7 @@
 | `sing__sing_status` | 无 | 查网关在不在、有哪些音色 |
 | `sing__say_status` | 无 | 查「说话」后端：在线、音色、剩余额度 |
 | `sing__say_voices` | `keyword`（可选） | 列说话音色，支持按名字过滤 |
+| `sing__breeze_claim` | 无 | 领 Breeze 每日额度（+400）并报余额 |
 | `sing__login` / `sing__netease_login` | `action` | 网易云扫码登录（控制台徽标也用这两个） |
 
 工具级超时：`sing_song` 300 秒（内部轮询到 280 秒主动放弃），其余 20-30 秒。整首 4 分钟的歌约 22 秒（换声常驻时）。
@@ -61,6 +62,9 @@
 | `apiToken` | secret | 与网关 `config.json` 的 `token` 一致；宿主用 AES-256-GCM 加密落盘，不回显明文 |
 | `breezeKey` | secret | 走云端说话时填（`brz_…`）；加密保存，不回显。填完插件会推给网关并落盘 |
 | `breezeVoiceId` | text | 云端音色 id，如 `voc_8yud7hz7c9q2`；不知道就让机器人「列出说话音色」 |
+| `breezeEmail` | text | Breeze 账号邮箱（用于自动领每日额度） |
+| `breezePassword` | secret | Breeze 账号密码；只用来调官网登录接口换会话，加密存宿主 |
+| `breezeAutoClaim` | boolean | 每小时自动领一次每日额度（幂等），默认开 |
 | `defaultVoice` | text | 唱歌音色名，留空用网关默认值 |
 | `maxSeconds` | number | 单次换声上限，默认 60，范围 5-180 |
 | `voiceSeconds` | number | 语音条秒数，0 = 整首（默认） |

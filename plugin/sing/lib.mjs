@@ -85,7 +85,9 @@ export function normalizeSettings(raw) {
     voiceSeconds: Number(input.voiceSeconds) === 0 ? 0 : clampInt(input.voiceSeconds, 5, 600, DEFAULTS.voiceSeconds),
     allowInsecureHttp: input.allowInsecureHttp === true,
     allowFileOutput: input.allowFileOutput === true,
-    pollIntervalMs: clampInt(input.pollIntervalMs, 1000, 10000, DEFAULTS.pollIntervalMs)
+    pollIntervalMs: clampInt(input.pollIntervalMs, 1000, 10000, DEFAULTS.pollIntervalMs),
+    breezeEmail: String(input.breezeEmail ?? '').trim(),
+    breezeAutoClaim: input.breezeAutoClaim !== false,
   };
 }
 

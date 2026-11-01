@@ -84,7 +84,7 @@ export function normalizeConfig(raw, { rootDir = process.cwd() } = {}) {
     },
     // 说话：breeze=云端 / breeze-local=本机权重（带云端兜底）/ none=关掉
     say: {
-      engine: ['none', 'breeze', 'breeze-local'].includes(asString(sayInput.engine)) ? asString(sayInput.engine) : DEFAULT_CONFIG.say.engine,
+      engine: ['none', 'breeze', 'breeze-local', 'auto'].includes(asString(sayInput.engine)) ? asString(sayInput.engine) : DEFAULT_CONFIG.say.engine,
       voice: asString(sayInput.voice),
       rate: asInt(sayInput.rate, DEFAULT_CONFIG.say.rate, -10, 10),
       volume: asInt(sayInput.volume, DEFAULT_CONFIG.say.volume, 0, 100),
@@ -92,6 +92,10 @@ export function normalizeConfig(raw, { rootDir = process.cwd() } = {}) {
       // Breeze 云端 TTS（api.breeze.blue）
       breezeUrl: asString(sayInput.breezeUrl) || 'https://api.breeze.blue',
       breezeKey: asString(sayInput.breezeKey),
+      // 备用 Key：主 Key 不可用（额度/失效）时按顺序轮换
+      breezeKeys: Array.isArray(sayInput.breezeKeys)
+        ? sayInput.breezeKeys.map((k) => String(k || '').trim()).filter(Boolean).slice(0, 10)
+        : [],
       voiceId: asString(sayInput.voiceId),
       breezeModel: asString(sayInput.breezeModel) || 'breeze-tts-2',
       languageCode: asString(sayInput.languageCode),
@@ -115,6 +119,11 @@ export function normalizeConfig(raw, { rootDir = process.cwd() } = {}) {
       // 而每次生成的音色是重新采样的 → 一条消息里前后像两个人（2026-11-01 实测确认）
       splitSentences: sayInput.splitSentences === true,
       maxSegmentChars: asInt(sayInput.maxSegmentChars, 30, 8, 200),
+      // 音区守门：合成后测基频，落在 [min,max] 之外就换 seed 重试（不动音频）
+      registerMin: asInt(sayInput.registerMin, 330, 80, 600),
+      registerMax: asInt(sayInput.registerMax, 385, 80, 600),
+      registerRetries: asInt(sayInput.registerRetries, 2, 0, 5),
+      registerRetryMaxSeconds: asInt(sayInput.registerRetryMaxSeconds, 12, 1, 60),
       // 唱歌前停掉本地 TTS / 说话前拉起来（命令留空 = 不调度）
       localPython: asString(sayInput.localPython),
       localModelDir: asString(sayInput.localModelDir),

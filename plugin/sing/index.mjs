@@ -79,15 +79,18 @@ async function loadConfig() {
   const conf = normalizeSettings(settings);
   let token = '';
   let breezeKey = '';
+  let breezePassword = '';
   try {
     const secrets = await callHost('cap.secrets.get', {});
     token = String(secrets?.values?.apiToken ?? '');
     breezeKey = String(secrets?.values?.breezeKey ?? '').trim();
+    breezePassword = String(secrets?.values?.breezePassword ?? '');
   } catch { token = ''; }
   return {
     ...conf,
     token,
     breezeKey,
+    breezePassword,
     breezeVoiceId: String(settings?.breezeVoiceId ?? '').trim(),
     gatewayUrlFallback: String(settings?.gatewayUrlFallback ?? "").trim()
   };
@@ -216,7 +219,126 @@ async function syncSayConfig(conf) {
   }
 }
 
+// ── Breeze 账号：登录换会话 Cookie + 领每日额度 ──────────────────
+// 为什么在插件里做：签到没有开发者 API，只有网页控制台的接口，且认会话 Cookie。
+// 这个站的邮箱密码走自家服务器（/api/config 里 email_auth_mode=server），全程不碰 Google。
+// 会话 Cookie 存宿主 storage，失效（401）时自动重登一次。
+const BREEZE_ORIGIN = 'https://breezeblue.ai';
+const BREEZE_COOKIE_KEY = 'breezeSessionCookie';
+
+async function breezeRequest(pathname, { method = 'GET', body = null, cookie = '', withSetCookies = false } = {}) {
+  const headers = {
+    origin: BREEZE_ORIGIN,
+    referer: `${BREEZE_ORIGIN}/app/studio`,
+    'content-type': 'application/json'
+  };
+  if (cookie) headers.cookie = cookie;
+  const response = await callHost('cap.http.request', {
+    url: `${BREEZE_ORIGIN}${pathname}`,
+    method,
+    headers,
+    body: body === null ? null : JSON.stringify(body),
+    withSetCookies
+  });
+  const text = String(response?.body ?? '');
+  let json = null;
+  try { json = JSON.parse(text); } catch { /* 非 JSON */ }
+  return {
+    status: Number(response?.status) || 0,
+    json,
+    text,
+    setCookies: Array.isArray(response?.setCookies) ? response.setCookies : []
+  };
+}
+
+function cookieFromSetCookies(list) {
+  return (list || [])
+    .map((item) => String(item).split(';')[0].trim())
+    .filter((pair) => pair.includes('='))
+    .join('; ');
+}
+
+async function breezeLogin(conf) {
+  if (!conf.breezeEmail || !conf.breezePassword) {
+    throw new Error('还没填 Breeze 账号邮箱/密码：控制台 → 插件 → 点歌唱歌 → 「云端额度」');
+  }
+  const res = await breezeRequest('/api/auth/email/continue', {
+    method: 'POST',
+    body: { email: conf.breezeEmail, password: conf.breezePassword },
+    withSetCookies: true
+  });
+  if (res.status !== 200) {
+    throw new Error(`Breeze 登录失败 HTTP ${res.status}：${res.json?.detail || res.text.slice(0, 160)}`);
+  }
+  const cookie = cookieFromSetCookies(res.setCookies);
+  if (cookie) await callHost('cap.storage.set', { key: BREEZE_COOKIE_KEY, value: cookie }).catch(() => {});
+  return cookie;
+}
+
+async function readBreezeCookie() {
+  try {
+    const saved = await callHost('cap.storage.get', { key: BREEZE_COOKIE_KEY });
+    return String(saved?.value ?? '');
+  } catch {
+    return '';
+  }
+}
+
+/** 领每日额度 → { claimed, credits, balance, next, tier, status, message } */
+async function breezeClaim(conf, { tier = 'discord' } = {}) {
+  let cookie = await readBreezeCookie();
+  if (!cookie) cookie = await breezeLogin(conf);
+
+  const send = (useTier, useCookie) => breezeRequest('/api/credits/daily-claim', {
+    method: 'POST',
+    body: { reward_tier: useTier },
+    cookie: useCookie
+  });
+
+  let res = await send(tier, cookie);
+  if (res.status === 401) {                        // 会话过期：重登一次
+    cookie = await breezeLogin(conf);
+    res = await send(tier, cookie);
+  }
+  if (res.status !== 200 && tier !== 'standard') {  // +400 档被拒时降级 +100
+    const fallback = await send('standard', cookie);
+    if (fallback.status === 200) res = fallback;
+  }
+
+  const body = res.json || {};
+  return {
+    status: res.status,
+    claimed: body.claimed === true,
+    credits: Number(body.credits_issued) || 0,
+    balance: Number(body.balance),
+    tier: body.daily_claim_reward_tier || tier,
+    next: body.daily_claim_next_reset_at || '',
+    message: body.detail || (res.status === 200 ? '' : res.text.slice(0, 160))
+  };
+}
+
 const tools = {
+
+  /** 领 Breeze 每日额度并报余额（用户问「额度还剩多少」也走这个）。 */
+  breeze_claim: async () => {
+    const conf = await loadConfig();
+    const result = await breezeClaim(conf);
+    if (result.status !== 200) {
+      throw new Error(`领额度失败：${result.message || `HTTP ${result.status}`}`);
+    }
+    return {
+      ok: true,
+      claimed: result.claimed,
+      credits: result.credits,
+      balance: Number.isFinite(result.balance) ? result.balance : null,
+      next: result.next,
+      tier: result.tier,
+      note: result.claimed
+        ? `领到 ${result.credits} 额度，当前 ${result.balance}`
+        : `这一轮已经领过了，当前额度 ${result.balance}`
+    };
+  },
+
 
   /** 查「说话」后端状态：在线、音色、余额。 */
   say_status: async () => {
@@ -518,7 +640,22 @@ async function handleRequest(message) {
           await log(`零点清理失败：${describeError(error)}`, 'warn');
         }
       }
-      reply({ result: { ok: true, skipped: hour !== 0 } });
+      // 每小时顺手领一次 Breeze 额度：接口幂等（已领过返回 already_claimed），
+      // 只在"真领到"时写日志，避免每小时刷噪音。
+      let claimedCredits = 0;
+      try {
+        const conf = await loadConfig();
+        if (conf.breezeAutoClaim && conf.breezeEmail && conf.breezePassword) {
+          const claimed = await breezeClaim(conf);
+          if (claimed.claimed) {
+            claimedCredits = claimed.credits;
+            await log(`已领 Breeze 每日额度 +${claimed.credits}，当前 ${claimed.balance}`);
+          }
+        }
+      } catch (error) {
+        if (hour === 8) await log(`领 Breeze 额度失败：${describeError(error)}`, 'warn');
+      }
+      reply({ result: { ok: true, skipped: hour !== 0, claimedCredits } });
       return;
     }
     case 'callTool': {

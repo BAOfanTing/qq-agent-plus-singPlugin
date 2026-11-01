@@ -90,10 +90,11 @@ powershell -ExecutionPolicy Bypass -File scripts\sync-host-url.ps1 -SshHost root
 | 字段 | 作用 |
 |---|---|
 | `token` | 网关令牌，插件里要填同一个 |
-| `say.engine` | `breeze-local`（本地）/ `breeze`（云端）/ `none`（关掉） |
+| `say.engine` | **`auto`（默认：云端优先、失败落本地）** / `breeze`（只云端）/ `breeze-local`（只本地）/ `none` |
 | `say.instructions` | 本地音色的文字描述，如「清亮通透的少女音，软糯但不嗲」 |
 | `say.refAudio` + `refText` | 想克隆具体音色时填参考 wav 及其文稿（必须一字不差） |
 | `say.breezeKey` / `voiceId` | 云端用；也可以在插件设置里填（插件会推到网关） |
+| `say.registerMin` / `registerMax` / `registerRetries` | 本地音区守门：合成后测基频，不在 330-385 Hz 就换 seed 重生成（最多 2 次，仅对 ≤12 秒音频） |
 | `say.localIdleMs` | 本地模型闲置多久退出，默认 `60000`（1 分钟）；`0` = 常驻不退 |
 | `say.splitSentences` / `maxSegmentChars` | 长回复是否按句切开分别合成（**默认关**）：开会更快拉平音高，但一条消息里音色会变，不建议 |
 | `say.pitchTarget` / `pitchMaxShift` | 音高归一：把每句基频拉齐到目标 Hz（如 `355`，`0` = 关）；最大改动半音数默认 `3`，本地实测设 **6** 才够 |

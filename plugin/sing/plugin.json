@@ -50,6 +50,33 @@
         ]
       },
       {
+        "key": "breezeAccount",
+        "title": "云端额度（Breeze 账号）",
+        "description": "填一次账号密码，插件会每天自动领取 400 额度（约 20 小时一轮）。密码加密存在宿主，日志与接口都不回显。不填也能用，只是额度要自己手动点。",
+        "fields": [
+          {
+            "key": "breezeEmail",
+            "label": "Breeze 账号邮箱",
+            "type": "text",
+            "default": "",
+            "help": "注册 breezeblue.ai 用的邮箱"
+          },
+          {
+            "key": "breezePassword",
+            "label": "Breeze 账号密码",
+            "type": "secret",
+            "help": "只用来调官网的登录接口换会话，不经过第三方"
+          },
+          {
+            "key": "breezeAutoClaim",
+            "label": "每天自动领额度",
+            "type": "boolean",
+            "default": true,
+            "help": "关掉后只保留手动工具 breeze_claim"
+          }
+        ]
+      },
+      {
         "key": "gateway",
         "title": "点歌后端",
         "description": "后端跑在你自己电脑上（gateway/ 目录），用隧道暴露成 https 域名后把地址填这里。",
@@ -156,6 +183,15 @@
       }
     },
     {
+      "name": "breeze_claim",
+      "timeoutMs": 40000,
+      "description": "领取 Breeze 每日额度（+400）并报告余额。用户问「额度还剩多少」「帮我领今天的额度」时调用。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
       "name": "login",
       "timeoutMs": 30000,
       "description": "网易云扫码登录。action=start：请求一张登录二维码（channel=console 返回给控制台网页显示，channel=chat 发到当前会话）；action=poll：查扫码结果，成功后 Cookie 由网关保存并立即生效；action=status / logout。控制台插件页的「扫码登录」按钮走的就是这条路。",
@@ -253,5 +289,8 @@
       "everyMs": 3600000
     }
   ],
-  "httpMaxBytes": 131072
+  "httpMaxBytes": 131072,
+  "httpDomains": [
+    "breezeblue.ai"
+  ]
 }

@@ -29,7 +29,7 @@ curl -s http://127.0.0.1:8899/health # 自检
 | `voice.pitch` | 变调半音（男声→女声 常填 +12，反之 -12；RVC 里叫 pitch） |
 | `voice.outputExt` | 换声脚本产出的格式（`wav` / `mp3` / `flac` / `m4a`） |
 | `voice.defaultVoice` | 音色名，插件设置留空时用它 |
-| `say.engine` | `breeze-local`（本地权重，按需加载、闲置退出）/ `breeze`（云端 API）/ `none`（关掉，只说文字） |
+| `say.engine` | `auto`（默认，云端优先 + 本地兜底）/ `breeze`（只云端）/ `breeze-local`（只本地）/ `none` |
 | `say.instructions` | 本地音色的文字描述，如「清亮通透的少女音，软糯但不嗲」 |
 | `say.refAudio` / `say.refText` | 参考克隆：3-10 秒干净人声 + 一字不差的文稿（留空 = 纯文字设计） |
 | `say.cfgScale` | 指令遵循强度（参考克隆时会被压到 1，模板不支持 CFG） |

@@ -53,6 +53,9 @@ function makeCloudEngine(say) {
 
   // 运行期可被插件覆盖：插件设置里填 Key / 选音色后推到网关，立即生效并落盘
   const runtime = { apiKey: String(say.breezeKey || ''), voiceId: String(say.voiceId || '') };
+  // 备用 Key：主 Key 报额度不足/失效时自动换下一个（多账号白嫖额度的场景）
+  const spareKeys = Array.isArray(say.breezeKeys) ? say.breezeKeys.filter(Boolean) : [];
+  let keyCursor = -1;
   const baseUrl = String(say.breezeUrl || DEFAULT_BASE).replace(/\/+$/, '');
   const modelId = String(say.breezeModel || 'breeze-tts-2');
   const languageCode = String(say.languageCode || '');
@@ -74,7 +77,7 @@ function makeCloudEngine(say) {
     },
     credentials: () => ({ ...runtime }),
 
-    /** 把文字读成音频，写进 output（扩展名按 content-type 决定）。 */
+    /** 把文字读成音频，写进 output（扩展名按 content-type 决定）。seed 可逐次覆盖。 */
     async convert({ text, output }) {
       if (!enabled) throw Object.assign(new Error('说话功能没开（网关 config.say.engine 不是 breeze）'), { code: 'E_SAY_OFF' });
       if (!runtime.apiKey) throw Object.assign(new Error('还没配 Breeze API Key'), { code: 'E_SAY_NO_KEY' });
@@ -90,16 +93,38 @@ function makeCloudEngine(say) {
       if (instructions) payload.instructions = instructions;
       if (guidanceScale > 0) payload.voice_settings = { guidance_scale: guidanceScale };
 
-      const response = await breezeFetch(url, { apiKey: runtime.apiKey, method: 'POST', body: payload, timeoutMs });
-      const type = String(response.headers.get('content-type') || '');
-      if (!response.ok) {
+      const allKeys = [runtime.apiKey, ...spareKeys].filter(Boolean);
+      // 轮换顺序：先用当前 key，失败再按列表换下一个（最多把列表走两遍）
+      const order = [];
+      for (let i = 0; i <= allKeys.length; i += 1) {
+        const idx = (Math.max(keyCursor, 0) + i) % allKeys.length;
+        if (!order.includes(idx)) order.push(idx);
+      }
+      let response = null;
+      let lastError = null;
+      for (const idx of order) {
+        const key = allKeys[idx];
+        if (!key) continue;
+        try {
+          response = await breezeFetch(url, { apiKey: key, method: 'POST', body: payload, timeoutMs });
+        } catch (error) {
+          lastError = error;
+          continue;
+        }
+        if (response.ok) { keyCursor = idx; runtime.apiKey = key; break; }
         let detail = '';
-        try { detail = (await response.text()).slice(0, 240); } catch { /* 忽略 */ }
-        throw Object.assign(
+        try { detail = (await response.clone().text()).slice(0, 200); } catch { /* 忽略 */ }
+        lastError = Object.assign(
           new Error(`Breeze 返回 ${response.status}${hintForStatus(response.status)}：${detail}`),
           { code: 'E_SAY_HTTP', status: response.status }
         );
+        // 只有额度/权限类错误才换 key（400/422 是请求本身的问题，换 key 没用）
+        if (![401, 402, 403, 429].includes(response.status)) break;
+        if (allKeys.length > 1) console.warn(`[say] Key #${idx + 1} 不可用（${response.status}），换下一个`);
       }
+      if (!response || !response.ok) throw lastError || Object.assign(new Error('Breeze 请求失败'), { code: 'E_SAY_HTTP' });
+
+      const type = String(response.headers.get('content-type') || '');
       if (!/^audio\//i.test(type)) {
         const body = await response.text().catch(() => '');
         throw Object.assign(new Error(`Breeze 没返回音频（content-type=${type || '空'}）：${body.slice(0, 160)}`), { code: 'E_SAY_NOT_AUDIO' });
@@ -113,7 +138,7 @@ function makeCloudEngine(say) {
       const target = String(output).replace(/\.[^./\\]+$/, '') + ext;
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, buffer);
-      return { file: target, bytes: buffer.length, chars: clean.length, format: ext.slice(1) };
+      return { file: target, bytes: buffer.length, chars: clean.length, format: ext.slice(1), via: 'cloud' };
     },
 
     /** 拉音色列表（插件选音色用）。 */
@@ -212,7 +237,7 @@ function makeLocalEngine(say) {
 
   return {
     name: 'breeze-local',
-    async convert({ text, output }) {
+    async convert({ text, output, seed: seedOverride }) {
       const clean = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, maxChars);
       if (!clean) throw Object.assign(new Error('要读的文字是空的'), { code: 'E_SAY_EMPTY' });
       if (refAudio && !fs.existsSync(refAudio)) {
@@ -229,7 +254,7 @@ function makeLocalEngine(say) {
       form.set('text', clean);
       if (instruction) form.set('instruction', instruction);
       if (effectiveCfg > 0) form.set('cfg_scale', String(effectiveCfg));
-      form.set('seed', String(seed));
+      form.set('seed', String(Number.isFinite(Number(seedOverride)) ? Number(seedOverride) : seed));
       if (refAudio) {
         const bytes = fs.readFileSync(refAudio);
         form.set('ref_audio', new Blob([bytes]), path.basename(refAudio));
@@ -265,7 +290,7 @@ function makeLocalEngine(say) {
       const target = String(output).replace(/\.[^./\\]+$/, '') + '.wav';
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, wav);
-      return { file: target, bytes: wav.length, chars: clean.length, format: 'wav' };
+      return { file: target, bytes: wav.length, chars: clean.length, format: 'wav', via: 'local' };
     },
 
     async status() {
@@ -310,6 +335,44 @@ export function createSayEngine(config) {
       async listVoices() { return []; },
       async balance() { return null; },
       credentials: () => ({})
+    };
+  }
+
+  // auto：优先云端（3-6 秒、音色绝对稳定、按字符扣额度），云端不可用再落本地（免费但要 8.2 GB 显存）
+  if (engineName === 'auto') {
+    const cloud = makeCloudEngine(say);
+    const local = makeLocalEngine(say);
+    return {
+      name: 'auto',
+      setCredentials: (...args) => cloud.setCredentials(...args),
+      credentials: () => cloud.credentials(),
+      async convert(args) {
+        const hasKey = Boolean(cloud.credentials().apiKey);
+        if (hasKey) {
+          try {
+            return await cloud.convert(args);
+          } catch (error) {
+            const code = String(error?.code || '');
+            const status = Number(error?.status) || 0;
+            // 额度不足/服务故障才落本地；Key 写错就直接报错（落本地反而掩盖问题）
+            if (code === 'E_SAY_NET' || status >= 500 || status === 429 || status === 402 || status === 404) {
+              console.warn(`[say] 云端不可用（${status || code}），回落本地：${String(error?.message ?? error).slice(0, 120)}`);
+            } else {
+              throw error;
+            }
+          }
+        }
+        return await local.convert(args);
+      },
+      async status(options) {
+        const cloudStatus = await cloud.status(options);
+        if (cloudStatus.online) return { ...cloudStatus, mode: 'cloud' };
+        const localStatus = await local.status(options);
+        return { ...cloudStatus, mode: 'local', localRunning: localStatus.online,
+          note: cloudStatus.note ? `${cloudStatus.note}（已回落本地）` : '云端不可用，已回落本地' };
+      },
+      listVoices: (...args) => cloud.listVoices(...args),
+      balance: (...args) => cloud.balance(...args)
     };
   }
 

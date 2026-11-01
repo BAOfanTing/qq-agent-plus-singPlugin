@@ -521,19 +521,59 @@ export function createApp({
    * 同一个音色每次生成会飘 ±25 Hz（约 1 个半音），听感像换了个人 —— 拉齐之后稳定得多。
    * 返回归一后的文件路径（失败则原样返回）。
    */
+  /** 测一段音频的中位基频（用 say-model/f0.py）；测不到返回 0。 */
+  const measurePitch = async (file) => {
+    const python = String(config.say.localPython || '').trim();
+    const script = config.say.localAppDir ? path.join(config.say.localAppDir, 'f0.py') : '';
+    if (!python || !script || !fs.existsSync(script)) return 0;
+    try {
+      const result = await runProcess(python, [script, file], { timeoutMs: 60000 });
+      const value = Number.parseFloat(String(result?.stdout || result?.stderr || '').trim());
+      return Number.isFinite(value) && value > 0 ? value : 0;
+    } catch (error) {
+      const value = Number.parseFloat(String(error?.stdout || error?.stderr || '').trim());
+      return Number.isFinite(value) && value > 0 ? value : 0;
+    }
+  };
+
+  /**
+   * 音区守门：本地模型对不同文本会随机落在高/低音区（实测同一句换个 seed
+   * 就能从 266 Hz 跳到 380 Hz，而 MFCC 相似度仍有 0.98——换的是音区不是嗓子）。
+   * 所以合成后测一次基频，落在 [registerMin, registerMax] 之外就换个 seed 重来，
+   * 不碰音频本身，也就没有变调痕迹。
+   */
+  const synthesizeInRegister = async (text, output, baseSeed = 42) => {
+    const min = Number(config.say.registerMin) || 0;
+    const max = Number(config.say.registerMax) || 0;
+    const retries = Number(config.say.registerRetries) || 0;
+    let spoke = await say.convert({ text, output, seed: baseSeed });
+    // 云端音色本来就稳定，不需要守门（守门每轮要跑一次 python 测基频，会把 3 秒拖成 20 秒）
+    if (spoke.via === 'cloud') return spoke;
+    if (min <= 0 || max <= 0 || retries <= 0) return spoke;
+    // 只对短音频重试：长文本不管怎么换 seed 都会落在低音区，
+    // 重试只会把 80 秒拖成 230 秒（2026-11-01 实测）
+    const retryMaxSeconds = Number(config.say.registerRetryMaxSeconds) || 12;
+    const seconds = await probeSeconds(spoke.file);
+    if (seconds > retryMaxSeconds) {
+      console.log(`[say] 音频 ${seconds.toFixed(1)} 秒 > ${retryMaxSeconds}，跳过音区重试`);
+      return spoke;
+    }
+    let pitch = await measurePitch(spoke.file);
+    for (let attempt = 1; attempt <= retries && pitch > 0 && (pitch < min || pitch > max); attempt += 1) {
+      const nextSeed = baseSeed + attempt * 13;
+      console.log(`[say] 音区 ${pitch.toFixed(0)} Hz 不在 ${min}-${max}，换 seed=${nextSeed} 重试（${attempt}/${retries}）`);
+      try { fs.rmSync(spoke.file, { force: true }); } catch { /* 忽略 */ }
+      spoke = await say.convert({ text, output, seed: nextSeed });
+      pitch = await measurePitch(spoke.file);
+    }
+    if (pitch > 0) console.log(`[say] 音区 ${pitch.toFixed(0)} Hz`);
+    return spoke;
+  };
+
   const pitchNormalize = async (file) => {
     const target = Number(config.say.pitchTarget) || 0;
     if (target <= 0) return file;
-    const python = String(config.say.localPython || '').trim();
-    const script = config.say.localAppDir ? path.join(config.say.localAppDir, 'f0.py') : '';
-    if (!python || !script || !fs.existsSync(script)) return file;
-    let measured = 0;
-    try {
-      const result = await runProcess(python, [script, file], { timeoutMs: 60000 });
-      measured = Number.parseFloat(String(result?.stderr || result?.stdout || '').trim());
-    } catch (error) {
-      measured = Number.parseFloat(String(error?.stderr || '').trim());
-    }
+    const measured = await measurePitch(file);
     if (!Number.isFinite(measured) || measured <= 0) return file;
     const ratio = target / measured;
     const semitones = 12 * Math.log2(ratio);
@@ -608,10 +648,13 @@ export function createApp({
         const parts = [];
         for (let i = 0; i < chunks.length; i += 1) {
           const partRaw = path.join(tmpDir, `say-${Date.now()}-${i}.wav`);
-          const part = await say.convert({ text: chunks[i], output: partRaw });
+          const part = await synthesizeInRegister(chunks[i], partRaw);
           tempFiles.push(part.file);
-          const normalizedPart = await pitchNormalize(part.file);
-          if (normalizedPart !== part.file) tempFiles.push(normalizedPart);
+          let normalizedPart = part.file;
+          if (part.via !== 'cloud') {
+            normalizedPart = await pitchNormalize(part.file);
+            if (normalizedPart !== part.file) tempFiles.push(normalizedPart);
+          }
           parts.push(normalizedPart);
         }
         const merged = path.join(tmpDir, `say-${Date.now()}-merged.wav`);
@@ -621,10 +664,13 @@ export function createApp({
         spoke = { file: merged, bytes: fs.statSync(merged).size, chars: String(text ?? '').length, format: 'wav' };
       } else {
         const raw = path.join(tmpDir, `say-${Date.now()}.wav`);
-        spoke = await say.convert({ text, output: raw });
+        spoke = await synthesizeInRegister(text, raw);
         tempFiles.push(spoke.file);
-        const normalized = await pitchNormalize(spoke.file);
-        if (normalized !== spoke.file) { tempFiles.push(normalized); spoke.file = normalized; }
+        // 云端输出保持原样（那是官方音色，改音高反而会走味）
+        if (spoke.via !== 'cloud') {
+          const normalized = await pitchNormalize(spoke.file);
+          if (normalized !== spoke.file) { tempFiles.push(normalized); spoke.file = normalized; }
+        }
         spoke.format = /mp3$/i.test(spoke.file) ? 'mp3' : spoke.format;
       }
     } catch (error) {
