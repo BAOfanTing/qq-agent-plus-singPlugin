@@ -66,12 +66,21 @@ function makeCloudEngine(say) {
   const timeoutMs = Math.max(5000, Number(say.timeoutMs) || 120000);
 
   let balanceCache = { at: 0, value: null };
+  let onlineCache = { at: 0, value: null };   // 连通性检查也缓存，别被插件探针刷爆 Breeze
 
   const engine = {
     name: enabled ? 'breeze' : 'none',
 
-    /** 插件推上来的 Key / 音色，立即生效。 */
-    setCredentials({ apiKey, voiceId } = {}) {
+    /**
+     * 插件推上来的 Key / 音色，立即生效。
+     * replace=true 时按"完整覆盖"处理：空字符串表示清除（插件设置是唯一真相源）。
+     */
+    setCredentials({ apiKey, voiceId, replace = false } = {}) {
+      if (replace) {
+        if (typeof apiKey === 'string') runtime.apiKey = apiKey.trim();
+        if (typeof voiceId === 'string') runtime.voiceId = voiceId.trim();
+        return;
+      }
       if (typeof apiKey === 'string' && apiKey.trim()) runtime.apiKey = apiKey.trim();
       if (typeof voiceId === 'string' && voiceId.trim()) runtime.voiceId = voiceId.trim();
     },
@@ -186,9 +195,19 @@ function makeCloudEngine(say) {
       if (!enabled) return { ...base, online: false, note: '网关没开说话功能（say.engine ≠ breeze）' };
       if (!hasKey) return { ...base, online: false, note: '还没填 Breeze API Key' };
       try {
-        const response = await breezeFetch(`${baseUrl}/v1/models`, { apiKey: runtime.apiKey, timeoutMs: 15000 });
-        if (!response.ok) {
-          return { ...base, online: false, balance: null, note: `Breeze 返回 ${response.status}${hintForStatus(response.status)}` };
+        let online = onlineCache.value;
+        // 把状态码一起缓存：否则缓存里只存了 false，命中缓存时会跳过 fetch、
+        // 直接走到下面那句 return online: true —— 判活就会在"离线/在线"之间横跳。
+        let status = onlineCache.status;
+        if (online === null || fresh || Date.now() - onlineCache.at > 60000) {
+          const response = await breezeFetch(`${baseUrl}/v1/models`, { apiKey: runtime.apiKey, timeoutMs: 15000 });
+          online = response.ok;
+          status = response.status;
+          onlineCache = { at: Date.now(), value: online, status };
+        }
+        // 离线判断必须在缓存分支之外：命中缓存时也要走这里
+        if (!online) {
+          return { ...base, online: false, balance: null, note: `Breeze 返回 ${status ?? ''}${hintForStatus(status)}`.trim() };
         }
         const balance = await engine.balance({ fresh });
         return { ...base, online: true, balance, note: hasVoice ? '' : '还没选音色' };

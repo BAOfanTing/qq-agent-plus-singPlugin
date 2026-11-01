@@ -278,8 +278,20 @@ test('从输入里认出唱歌请求（宿主 send_voice 传的是自由文字�
   assert.equal(extractSongRequest('今天天气不错，我们出去玩吧'), '');
   assert.equal(extractSongRequest('唱'), '');
   assert.equal(extractSongRequest(''), '');
-  // 兜底：短、无标点、无空格的，直接当歌名（模型常只丢一个歌名过来）
-  assert.equal(extractSongRequest('雨爱'), '雨爱');
+  // 句中触发必须是真的在点歌：聊"唱歌"这件事不能被抓成歌名
+  // （曾经把「我会唱歌」抓成「歌」并真的去开唱）
+  assert.equal(extractSongRequest('我会唱歌'), '');
+  assert.equal(extractSongRequest('我超爱唱歌的'), '');
+  assert.equal(extractSongRequest('你想听我唱歌吗'), '');
+  assert.equal(extractSongRequest('好的，我来唱：起风了'), '起风了');
+  // 兜底规则默认关闭：模型的口头禅（「好的」「嗯嗯」）不能被当成歌名
+  assert.equal(extractSongRequest('雨爱'), '');
+  assert.equal(extractSongRequest('好的'), '');
+  assert.equal(extractSongRequest('嗯嗯'), '');
+  assert.equal(extractSongRequest('收到'), '');
+  // 显式打开 intent.bareTitle 才恢复旧行为
+  assert.equal(extractSongRequest('雨爱', { bareTitle: true }), '雨爱');
+  assert.equal(extractSongRequest('好的', { bareTitle: true }), '好的');
 });
 
 test('/v1/audio/speech：唱歌请求直接返回音频字节（给宿主的语音条通道）', async () => {
@@ -443,5 +455,26 @@ test('第一条候选取不到音频时，继续试后面的版本', async () =>
   } finally {
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('/say/status：Breeze 持续 500 时，连续两次都要报离线（缓存不能翻转结论）', async () => {
+  const fake = http.createServer((req, res) => {
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end('{"ok":false}');
+  });
+  await new Promise((resolve) => fake.listen(0, '127.0.0.1', resolve));
+  const fakePort = fake.address().port;
+  const { base, close } = await boot({
+    say: { engine: 'breeze', breezeUrl: `http://127.0.0.1:${fakePort}`, breezeKey: 'brz_x', voiceId: 'voc_x' }
+  });
+  try {
+    const first = await (await call(base, '/say/status')).json();
+    const second = await (await call(base, '/say/status')).json();
+    assert.equal(first.online, false, '第一次应离线');
+    assert.equal(second.online, false, '命中缓存时也必须离线（曾经错报成在线）');
+  } finally {
+    await close();
+    await new Promise((resolve) => fake.close(resolve));
   }
 });

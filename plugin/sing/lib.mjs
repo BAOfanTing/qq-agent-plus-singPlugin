@@ -79,7 +79,7 @@ export function normalizeSettings(raw) {
   return {
     gatewayUrl: String(input.gatewayUrl ?? DEFAULTS.gatewayUrl).trim(),
     defaultVoice: String(input.defaultVoice ?? DEFAULTS.defaultVoice).trim(),
-    maxSeconds: clampInt(input.maxSeconds, 5, 180, DEFAULTS.maxSeconds),
+    maxSeconds: clampInt(input.maxSeconds, 5, 280, DEFAULTS.maxSeconds),   // 群文件路径受工具 300s 超时限制
     // 0 = 唱完整首；其余 5..360 秒
     // 0 = 唱完整首（网关会分段换声，每段留在显存安全区）
     voiceSeconds: Number(input.voiceSeconds) === 0 ? 0 : clampInt(input.voiceSeconds, 5, 600, DEFAULTS.voiceSeconds),

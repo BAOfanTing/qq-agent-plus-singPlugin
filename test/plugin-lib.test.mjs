@@ -49,7 +49,7 @@ test('内网判定覆盖常见私有段', () => {
 test('设置收敛：越界一律夹紧，缺字段退回默认', () => {
   const conf = normalizeSettings({ gatewayUrl: ' https://a.example.com/ ', maxSeconds: 999, pollIntervalMs: 50 });
   assert.equal(conf.gatewayUrl, 'https://a.example.com/');
-  assert.equal(conf.maxSeconds, 180);
+  assert.equal(conf.maxSeconds, 280);   // 群文件路径受插件工具 300s 超时限制
   assert.equal(conf.pollIntervalMs, 1000);
   assert.equal(conf.allowInsecureHttp, false);
 

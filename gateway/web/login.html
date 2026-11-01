@@ -60,7 +60,8 @@
   <script src="/login/qrcode.js"></script>
   <script>
   (function () {
-    const token = new URLSearchParams(location.search).get('token') || '';
+    // 令牌从 # 片段读：location.hash 不会发给服务器，也不会留在隧道/nginx 访问日志里
+const token = new URLSearchParams(location.hash.replace(/^#/, '')).get('token') || '';
     const qrHost = document.getElementById('qr');
     const mask = document.getElementById('mask');
     const statusEl = document.getElementById('status');
@@ -130,7 +131,7 @@
 
     refresh.addEventListener('click', start);
     if (!token) {
-      setStatus('缺少令牌：请用 /login?token=<网关令牌> 打开本页', 'bad');
+      setStatus('缺少令牌：请用 /login#token=<网关令牌> 打开本页（令牌放在 # 后面）', 'bad');
       return;
     }
     start();

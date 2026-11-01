@@ -171,7 +171,7 @@ import 它并调用 `torch.cuda.set_per_process_memory_fraction(0.85, 0)` ——
 | 显存闸"加了但没效果" | 只写了 `sitecustomize.py` 和常量，`--gpu-fraction` 参数没定义、`run()` 也没传 → 等于没接线 | CLI 参数 + 传参补齐（分离、换声两处都传） |
 | 180 秒的歌跑了一半报"等太久" | 截止时间写成 `min(maxSeconds, cap) + 150000`，把"秒"直接加到"毫秒"上，实际只等了 150 秒 | 改成 `秒 × 1000 + 300000`（留 5 分钟余量） |
 | 网关进程莫名退出 | `/login/*` 写在全局 try 之外，网易云接口一抖动就是未捕获的 Promise 拒绝 | 单独 try/catch，返回 502 而不是崩进程 |
-| 控制台「扫码登录」报"令牌不对" | 登录接口只认 `?token=` 和 `x-gateway-token`，插件走的是 `Authorization: Bearer` | 三种来源都认 |
+| 控制台「扫码登录」报"令牌不对" | 登录接口只认请求头（`x-gateway-token` / `Authorization: Bearer`）；`?token=` 已移除，浏览器页面把令牌放在 `#` 后面 | 三种来源都认 |
 | 插件 import 二维码库报 `does not provide an export named 'default'` | 仓库 `package.json` 是 `type=module`，UMD 的 `.js` 被当 ESM 解析 | 改名 `qrcode.cjs` + `createRequire` |
 | 机器人说"才一秒"，但语音条显示 1'30" | 宿主按 `Math.round(text.length / 4)` 估时长，「唱：夜曲」4 个字 → 1 秒 | 网关回 `x-audio-seconds` 真实时长，宿主优先用它（宿主侧改动见 `qq-agent-plus` 仓库 `feat/tts-audio-seconds` 分支） |
 | `fetch failed`（约 50% 概率） | 服务器只有 IPv6 无出口 + Node Happy Eyeballs 默认 250ms 尝试超时 | 宿主 `NODE_OPTIONS=--dns-result-order=ipv4first --network-family-autoselection-attempt-timeout=5000`（实测 12/12 通过） |
@@ -194,3 +194,11 @@ import 它并调用 `torch.cuda.set_per_process_memory_fraction(0.85, 0)` ——
 4. 群里实测：`用语音唱一首X` → 看语音条时长、机器人报的秒数、有没有声音
 5. 出问题先看网关日志：每个请求一行 `[req] · POST /v1/audio/speech → 200 (24207ms)`；
    有这行说明请求到了并成功，没有这行说明是传输问题（隧道/超时/鉴权）
+
+## 意图识别：为什么"裸短词"默认不当歌名
+
+宿主把"说话"也走 `/v1/audio/speech`，如果沿用旧的兜底规则（≤20 字、无标点、无空格 → 当歌名），
+模型的口头禅会被当成歌名去搜歌开唱 —— 实测「好的」「嗯嗯」「收到」全部命中。
+
+所以兜底规则改成 **`intent.bareTitle`，默认 false**：只有明确写了「唱：X」「点歌 X」这类指令才唱，
+其余一律按说话处理。确实需要"只丢一个歌名"的老行为时，把 `intent.bareTitle` 设成 `true`。

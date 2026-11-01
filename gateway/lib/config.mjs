@@ -31,6 +31,7 @@ export const DEFAULT_CONFIG = Object.freeze({
            serveCommand: '', serveIdleMs: 600000, segmentSeconds: 30, gpuFraction: 0.9 },
   // 输出：auto = 有 ffmpeg 就转 mp3 并裁剪到 maxSeconds；never = 原样发
   transcode: 'auto',
+  intent: { bareTitle: false },
   maxSeconds: 600,
   // 成品里显示的「演唱者」——这是机器人自己的名字，不是原唱
   outputArtist: '小鲸鱼',
@@ -39,6 +40,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   // 语音条默认唱多久（宿主不指定时用它）；受 voiceMessageMaxSeconds 夹紧
   voiceMessageDefaultSeconds: 90,
   filesTtlHours: 24,
+  filesPruneMinAgeHours: 8,
   dataDir: 'gateway-run'
 });
 
@@ -131,12 +133,19 @@ export function normalizeConfig(raw, { rootDir = process.cwd() } = {}) {
       localStopCmd: asString(sayInput.localStopCmd),
       localStartCmd: asString(sayInput.localStartCmd)
     },
+    // 意图识别：bareTitle=true 时，短且不带标点/空格的中文会被当成歌名。
+    // 默认关：宿主 send_voice 也走这条通道，模型的口头禅（「好的」「收到」）会被当成歌名去唱歌。
+    intent: {
+      bareTitle: input?.intent?.bareTitle === true
+    },
     transcode: ['auto', 'never'].includes(asString(input.transcode)) ? asString(input.transcode) : DEFAULT_CONFIG.transcode,
     maxSeconds: asInt(input.maxSeconds, DEFAULT_CONFIG.maxSeconds, 5, 600),
     outputArtist: asString(input.outputArtist, DEFAULT_CONFIG.outputArtist) || DEFAULT_CONFIG.outputArtist,
     voiceMessageMaxSeconds: asInt(input.voiceMessageMaxSeconds, DEFAULT_CONFIG.voiceMessageMaxSeconds, 5, 600),
     voiceMessageDefaultSeconds: asInt(input.voiceMessageDefaultSeconds, DEFAULT_CONFIG.voiceMessageDefaultSeconds, 5, 600),
     filesTtlHours: asInt(input.filesTtlHours, DEFAULT_CONFIG.filesTtlHours, 1, 24 * 30),
+    // 清理只删"超过这个时长的成品"，不按自然日零点（否则 23:59 的歌 00:01 就没了）
+    filesPruneMinAgeHours: asInt(input.filesPruneMinAgeHours, DEFAULT_CONFIG.filesPruneMinAgeHours, 1, 24 * 30),
     dataDir: asString(input.dataDir, DEFAULT_CONFIG.dataDir) || DEFAULT_CONFIG.dataDir
   };
 

@@ -57,5 +57,9 @@
     "registerRetries": 2,
     "registerRetryMaxSeconds": 12,
     "breezeKeys": []
+  },
+  "filesPruneMinAgeHours": 8,
+  "intent": {
+    "bareTitle": false
   }
 }

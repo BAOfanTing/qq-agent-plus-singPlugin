@@ -41,7 +41,7 @@ export function simplifySong(song) {
     .trim();
 }
 
-export function extractSongRequest(input) {
+export function extractSongRequest(input, { bareTitle = false } = {}) {
   const text = String(input ?? '').trim();
   const clean = (raw) => String(raw ?? '')
     .replace(/[《》"“”'‘’]/g, '')
@@ -57,18 +57,27 @@ export function extractSongRequest(input) {
     if (song && song.length <= 60) return song;
   }
 
-  // ② 指令夹在句中（模型常写"好的，我来唱：起风了"）：取触发词之后的短尾巴
-  const tail = /(?:唱一首|唱|点歌)\s*[:：]?\s*([^，。！？!?\n]{1,30})$/.exec(text);
+  // ② 指令夹在句中（模型常写"好的，我来唱：起风了"）：取触发词之后的短尾巴。
+  //
+  // 触发词必须是"明确要求唱歌"的说法，孤零零一个「唱」不行 ——
+  // 否则「我会唱歌」「我超爱唱歌的」「你想听我唱歌吗」会被抓成「歌」「歌的」「歌吗」并开唱。
+  const tail = /(?:唱一首|唱首|来一首|来首|点歌)\s*[:：]?\s*([^，。！？!?\n]{1,30})$/.exec(text)
+    || /唱\s*[:：]\s*([^，。！？!?\n]{1,30})$/.exec(text);
   if (tail) {
     const song = clean(tail[1]);
     if (song && song.length <= 30) return song;
   }
 
-  // ③ 兜底：这个端点本来就是"唱歌专用"。模型有时会直接把歌名丢进来（"雨爱"），
-  //    只要短、不带句子成分、不带空格，就当点歌。
-  // 纯触发词（"唱""点歌"）不算歌名
-  const bareTrigger = /^(?:sing|点歌|唱一首|来一首|来首|唱)$/i;
-  if (text.length <= 20 && !bareTrigger.test(text) && !/[，。！？!?,;；\n]/.test(text) && !/\s/.test(text)) return text;
+  // ③ 兜底：只有显式打开（intent.bareTitle）才把"裸短词"当歌名。
+  //
+  // 为什么默认关：这条规则会把模型的口头禅当成歌名 —— 宿主 send_voice 是"说话"通道，
+  // 模型回一句「好的」「嗯嗯」「收到」全都命中，网关就去搜《好的》并开唱。
+  // 唱错歌的代价（群里冒出一段莫名其妙的歌）比"该唱没唱"大得多，所以默认偏向说话。
+  // 纯触发词（"唱""点歌"）永远不算歌名。
+  if (bareTitle) {
+    const bareTrigger = /^(?:sing|点歌|唱一首|来一首|来首|唱)$/i;
+    if (text.length <= 20 && !bareTrigger.test(text) && !/[，。！？!?,;；\n]/.test(text) && !/\s/.test(text)) return text;
+  }
 
   return '';
 }
@@ -257,11 +266,19 @@ export function createApp({
     }
   } catch { /* 状态文件坏了就当没有 */ }
 
+  // 正在跑的歌（串行队列，最多 1 个）。说话侧靠它判断"能不能动换声常驻进程"。
+  let activeSingJobs = 0;
+
   const queue = createJobQueue({
     // 唱歌前先把本地 TTS 的显存让出来（yieldLocalSay 在同作用域里定义，调用时已初始化）
     runner: async (job, ctx) => {
-      await yieldLocalSay();
-      return await runSingJob(job, ctx);
+      activeSingJobs += 1;
+      try {
+        await yieldLocalSay();
+        return await runSingJob(job, ctx);
+      } finally {
+        activeSingJobs = Math.max(0, activeSingJobs - 1);
+      }
     },
     ttlMs: config.filesTtlHours * 3600 * 1000,
     now
@@ -313,9 +330,19 @@ export function createApp({
   // 二维码在 /login 页面本地渲染，登录 key 不会离开本机。
   const loginSessions = new Map();
 
+  /** 清掉 10 分钟前生成的登录会话（unikey 只在扫码期间有意义）。 */
+  function pruneLoginSessions() {
+    const cutoff = now() - 10 * 60 * 1000;
+    for (const [key, value] of loginSessions) {
+      if (Number(value?.createdAt) < cutoff) loginSessions.delete(key);
+    }
+  }
+
   async function startNeteaseLogin() {
+    pruneLoginSessions();
     const response = await fetch('https://music.163.com/api/login/qrcode/unikey?type=1', {
-      headers: { 'user-agent': NETEASE_UA, referer: 'https://music.163.com/' }
+      headers: { 'user-agent': NETEASE_UA, referer: 'https://music.163.com/' },
+      signal: AbortSignal.timeout(8000)          // 网易云卡住时不能把请求挂死
     });
     const data = await response.json().catch(() => ({}));
     if (Number(data.code) !== 200 || !data.unikey) throw new Error(`申请二维码失败（code=${data.code}）`);
@@ -330,11 +357,14 @@ export function createApp({
   async function pollNeteaseLogin(key) {
     const response = await fetch(
       `https://music.163.com/api/login/qrcode/client/login?key=${encodeURIComponent(key)}&type=1`,
-      { headers: { 'user-agent': NETEASE_UA, referer: 'https://music.163.com/' } }
+      {
+        headers: { 'user-agent': NETEASE_UA, referer: 'https://music.163.com/' },
+        signal: AbortSignal.timeout(8000)
+      }
     );
     const data = await response.json().catch(() => ({}));
     const code = Number(data.code);
-    if (code === 800) return { state: 'expired' };
+    if (code === 800) { loginSessions.delete(key); return { state: 'expired' }; }
     if (code === 801) return { state: 'waiting' };
     if (code === 802) return { state: 'scanned' };
     if (code === 803) {
@@ -349,13 +379,15 @@ export function createApp({
       console.log('[login] 网易云登录成功，Cookie 已写入配置');
       return { state: 'ok', cookieKeys: raw.map((kv) => kv.split('=')[0]) };
     }
+    loginSessions.delete(key);
     return { state: 'failed', message: `未预期的状态码 ${code}` };
   }
 
   const pruneBeforeToday = () => {
-    const start = new Date(now());
-    start.setHours(0, 0, 0, 0);
-    const cutoff = start.getTime();
+    // 按"文件年龄"删：按自然日零点会让 23:59 唱完的歌在 00:01 被删，
+    // 而插件可能正好那时来下载（404）。默认只删 8 小时前的成品。
+    const minAgeHours = Math.max(1, Number(config.filesPruneMinAgeHours) || 8);
+    const cutoff = now() - minAgeHours * 3600 * 1000;
     let removed = 0;
     let bytes = 0;
     for (const name of fs.readdirSync(filesDir)) {
@@ -498,9 +530,15 @@ export function createApp({
 
   /** 说话前调用：确保本地 TTS 在跑（已就绪就只做一次健康检查，几毫秒）。 */
   const resumeLocalSay = async () => {
-    if (config.say.engine !== 'breeze-local') return;
-    if (localChild && localChild.exitCode === null) return;
-    if (!localSayStopped && (await localHealthOk())) return;
+    if (!['breeze-local', 'auto'].includes(config.say.engine)) return false;
+    if (localChild && localChild.exitCode === null) return true;
+    if (!localSayStopped && (await localHealthOk())) return true;
+    // 正在唱歌时绝对不能 shutdown 换声常驻 —— 那会把队列里这首歌直接弄死。
+    // 交给调用方退回云端（auto）或稍后重试（breeze-local）。
+    if (activeSingJobs > 0) {
+      console.warn('[say] 唱歌进行中，暂不动换声常驻进程');
+      return false;
+    }
     // 换声的常驻进程闲着也占 2.4 GB；本地 TTS 要 8.4 GB，10 GB 卡上会顶到颠簸
     // （实测挤在一起时一句要 435 秒）。所以先把换声常驻收掉，下次唱歌它会自己重启。
     if (typeof voice.shutdown === 'function') {
@@ -514,6 +552,7 @@ export function createApp({
     const ok = await startLocalSay();
     localSayStopped = !ok;
     if (!ok) console.warn('[say] 本地 TTS 没拉起来，将退回云端（如果配了 Key）');
+    return ok;
   };
 
   /**
@@ -633,8 +672,12 @@ export function createApp({
    */
   async function handleSay(req, res, text) {
     const startedAt = Date.now();
+    // 截断要留痕：以前静默截断，长回复后半段被丢掉、模型完全不知道
+    const sayMaxChars = Math.max(20, Number(config.say.maxChars) || 800);
+    const wasTruncated = String(text ?? '').replace(/\s+/g, ' ').trim().length > sayMaxChars;
     clearLocalIdle();                                 // 有请求进来就别再倒计时
-    await resumeLocalSay();
+    // breeze-local：说话前必须把本地模型准备好；auto：先让云端试，失败再准备本地
+    if (config.say.engine === 'breeze-local') await resumeLocalSay();
 
     // 长回复切句：逐句合成 + 逐句音高归一，再拼回一条
     const chunks = config.say.splitSentences
@@ -664,7 +707,15 @@ export function createApp({
         spoke = { file: merged, bytes: fs.statSync(merged).size, chars: String(text ?? '').length, format: 'wav' };
       } else {
         const raw = path.join(tmpDir, `say-${Date.now()}.wav`);
-        spoke = await synthesizeInRegister(text, raw);
+        try {
+          spoke = await synthesizeInRegister(text, raw);
+        } catch (error) {
+          // auto：云端挂了才去拉本地模型重试一次（本地准备会收换声常驻，所以放到这里）
+          if (config.say.engine !== 'auto') throw error;
+          const prepared = await resumeLocalSay();
+          if (!prepared) throw error;
+          spoke = await synthesizeInRegister(text, raw);
+        }
         tempFiles.push(spoke.file);
         // 云端输出保持原样（那是官方音色，改音高反而会走味）
         if (spoke.via !== 'cloud') {
@@ -688,10 +739,12 @@ export function createApp({
     // 探不到时长就按中文语速估（约 4.5 字/秒），别报 0 让宿主又说"才一秒"
     const seconds = probed > 0 ? probed : Math.max(1, Math.round(spoke.chars / 4.5));
     console.log(`[say] ${spoke.chars} 字 → ${seconds} 秒（${Math.round(buffer.length / 1024)} KB，${Date.now() - startedAt}ms）`);
+    if (wasTruncated) console.warn(`[say] 文本超过 say.maxChars=${sayMaxChars}，后半段已被丢弃`);
     res.writeHead(200, {
       'content-type': contentType,
       'content-length': buffer.length,
-      'x-audio-seconds': String(seconds)
+      'x-audio-seconds': String(seconds),
+      ...(wasTruncated ? { 'x-truncated': '1', 'x-max-chars': String(sayMaxChars) } : {})
     });
     res.end(buffer);
     for (const f of new Set([...tempFiles, spoke.file])) {
@@ -746,7 +799,8 @@ export function createApp({
     }
 
     // ── 网易云扫码登录（拿 Cookie，只存本机）──────────────────────────
-    // 页面是静态的，不需要鉴权；它调的 /login/* 需要令牌（?token= 或 x-gateway-token）。
+    // 页面是静态的，不需要鉴权；它调的 /login/* 只认请求头（x-gateway-token / Bearer），
+    // 页面自己把令牌放在 # 片段里读，不发给服务器。
     if (pathname === '/login' && req.method === 'GET') {
       const file = path.join(WEB_DIR, 'login.html');
       if (!fs.existsSync(file)) { sendJson(res, 500, { ok: false, message: '缺少 login.html' }); return; }
@@ -764,12 +818,13 @@ export function createApp({
       return;
     }
     if (pathname.startsWith('/login/')) {
-      // 三种来源都认：?token=（浏览器页面）、x-gateway-token（页面 JS）、Authorization: Bearer（插件调用）
+      // 只认两种请求头：x-gateway-token（页面 JS）与 Authorization: Bearer（插件调用）
       const bearer = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-      const given = String(url.searchParams.get('token') || req.headers['x-gateway-token'] || bearer || '').trim();
+      // 不再接受 ?token=：URL 查询参数会留在浏览器历史、隧道日志和 Referer 里
+      const given = String(req.headers['x-gateway-token'] || bearer || '').trim();
       const expected = String(config.token || '').trim();
       if (expected && given !== expected) {
-        sendJson(res, 401, { ok: false, message: '令牌不对：请用 /login?token=<网关令牌> 打开' });
+        sendJson(res, 401, { ok: false, message: '令牌不对：请用 /login#token=<网关令牌> 打开（令牌在 # 后面，不会发给服务器）' });
         return;
       }
       // ⚠️ 这段在全局 try 之外（令牌校验之前）：必须自己接住异常。
@@ -828,7 +883,7 @@ export function createApp({
         const body = await readJsonBody(req);
         const input = String(body.input ?? body.text ?? '').trim();
         if (!input) throw Object.assign(new Error('缺少 input（要唱的歌名或要说的话）'), { code: 'E_ARGS' });
-        const song = extractSongRequest(input);
+        const song = extractSongRequest(input, { bareTitle: config.intent?.bareTitle === true });
         if (!song) {
           // 不是点歌 → 说话（TTS）。宿主 send_voice 指向本网关后，机器人"想说话"也会打到这里，
           // 以前一律回"只会唱歌"，宿主只好退回文字；现在直接读出来发语音条。
@@ -968,7 +1023,12 @@ export function createApp({
       if (pathname === '/say/config' && req.method === 'POST') {
         const body = await readJsonBody(req);
         if (typeof say.setCredentials === 'function') {
-          say.setCredentials({ apiKey: body.apiKey, voiceId: body.voiceId });
+          say.setCredentials({
+            apiKey: body.apiKey,
+            voiceId: body.voiceId,
+            // replace: true → 完整覆盖（空值=清除）；否则只更新非空项
+            replace: body.replace === true
+          });
         }
         saveRuntimeState();
         const creds = typeof say.credentials === 'function' ? say.credentials() : {};

@@ -171,8 +171,11 @@ async function waitForJob(conf, jobId, { onTick } = {}) {
       throw Object.assign(new Error(job.message || '换声失败'), { code: 'E_JOB_FAILED' });
     }
     if (job.state === 'done') return job;
-    if (job !== last) {
-      last = job;
+    // parseJob 每次返回新对象，用 !== 比较恒为真 → 每 2 秒刷一条日志。
+    // 改成比较进度/消息，真的变了才回调。
+    const signature = `${job.state}|${job.progress}|${job.message || ''}`;
+    if (signature !== last) {
+      last = signature;
       if (onTick) await onTick(job);
     }
     await sleep(conf.pollIntervalMs);
@@ -185,10 +188,12 @@ async function waitForJob(conf, jobId, { onTick } = {}) {
 
 // 插件不参与「语音条」那条链路（宿主直接打网关），所以设置里的秒数要主动推给网关。
 // 只在值变化时推一次；失败不影响主流程。
-let lastSyncedVoiceSeconds = 0;
+let lastSyncedVoiceSeconds = null;   // null = 还没推过；0 是合法值（= 整首）
 async function syncVoiceSeconds(conf) {
-  const seconds = Number(conf.voiceSeconds) || 0;
-  if (!seconds || seconds === lastSyncedVoiceSeconds) return;
+  // 注意 0 是合法值（= 唱整首），不能用 !seconds 拦掉 —— 否则插件里填 0 永远推不出去
+  const raw = Number(conf.voiceSeconds);
+  const seconds = Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 0;
+  if (seconds === lastSyncedVoiceSeconds) return;
   try {
     const r = await callGateway(conf, '/admin/voice-seconds', { method: 'POST', body: { seconds } });
     lastSyncedVoiceSeconds = Number(r?.seconds) || seconds;
@@ -199,21 +204,23 @@ async function syncVoiceSeconds(conf) {
 }
 
 
-// 插件设置里的 Breeze Key / 音色要推给网关（说话那条链路是宿主直连网关，插件不参与），
-// 只在值变化时推一次；空值表示"别改网关里已有的"。
-let lastSyncedSay = { key: '', voiceId: '' };
+// 插件设置里的 Breeze Key / 音色要推给网关（说话那条链路是宿主直连网关，插件不参与）。
+// 语义：**插件设置是唯一真相源**，每次把完整值推过去（包括空值 = 清除）。
+// 以前"空值表示别改"会导致两个问题：清空 Key 无法撤销；网关丢了 runtime.json 后配置悄悄回默认。
+let lastSyncedSay = null;
 async function syncSayConfig(conf) {
   const apiKey = String(conf.breezeKey || '').trim();
   const voiceId = String(conf.breezeVoiceId || '').trim();
-  if (!apiKey && !voiceId) return;
-  if (apiKey === lastSyncedSay.key && voiceId === lastSyncedSay.voiceId) return;
+  const next = { key: apiKey, voiceId };
+  if (lastSyncedSay && lastSyncedSay.key === apiKey && lastSyncedSay.voiceId === voiceId) return;
   try {
+    // replace: true → 网关按这份值完整覆盖（空字符串 = 清除）
     const result = await callGateway(conf, '/say/config', {
       method: 'POST',
-      body: { apiKey, voiceId }
+      body: { apiKey, voiceId, replace: true }
     });
-    lastSyncedSay = { key: apiKey, voiceId };
-    await log(`Breeze 配置已同步给网关：key=${result?.hasKey ? '有' : '空'} 音色=${result?.voiceId || '沿用'}`);
+    lastSyncedSay = next;
+    await log(`Breeze 配置已同步给网关：key=${result?.hasKey ? '有' : '清空'} 音色=${result?.voiceId || '清空'}`);
   } catch (error) {
     await log(`Breeze 配置同步失败：${describeError(error)}`, 'warn');
   }
@@ -446,26 +453,6 @@ const tools = {
 
   /** 给出网易云扫码登录链接（登录态由网关保存，插件只负责把链接递出去）。 */
 
-  netease_login: async () => {
-    const conf = await loadConfig();
-    const base = normalizeGatewayUrl(conf.gatewayUrl, { allowInsecureHttp: conf.allowInsecureHttp });
-    const token = String(conf.token || '');
-    const health = await callGateway(conf, '/health').catch(() => null);
-    return {
-      ok: true,
-      alreadyLoggedIn: Boolean(health?.neteaseCookie),
-      url: `${base}/login${token ? `?token=${encodeURIComponent(token)}` : ''}`,
-      steps: [
-        '在电脑或手机上打开上面的链接（和网关同一台机器的话直接点开即可）',
-        '用手机网易云 App 扫页面上的二维码',
-        '手机上点「确认登录」，页面显示成功后就可以关掉',
-        '之后点 VIP 曲会自动用原唱（不用再改配置）'
-      ],
-      note: health?.neteaseCookie
-        ? '现在已经有登录态了；如果原唱还是取不到，可能是这首歌压根不在曲库'
-        : '没登录时只能唱免费曲；VIP 曲会提示"需要 VIP"'
-    };
-  },
 
 /** 只读：查后端在不在、能不能唱、有哪些音色。 */
   sing_status: async () => {
@@ -529,7 +516,7 @@ const tools = {
     await syncVoiceSeconds(conf);
     const song = normalizeSongName(args?.song ?? args?.keyword);
     const voice = normalizeVoice(args?.voice) || conf.defaultVoice;
-    const maxSeconds = Math.min(180, Math.max(5, Number(args?.maxSeconds) || conf.maxSeconds));
+    const maxSeconds = Math.min(280, Math.max(5, Number(args?.maxSeconds) || conf.maxSeconds));
 
     await log(`点歌：${song}${voice ? `（音色 ${voice}）` : ''}，上限 ${maxSeconds} 秒`);
 
