@@ -50,7 +50,7 @@
     "localIdleMs": 60000,
     "pitchTarget": 0,
     "pitchMaxShift": 6,
-    "splitSentences": true,
+    "splitSentences": false,
     "maxSegmentChars": 20
   }
 }
