@@ -167,11 +167,11 @@ import 它并调用 `torch.cuda.set_per_process_memory_fraction(0.85, 0)` ——
 | 现象 | 根因 | 修法 |
 |---|---|---|
 | 点歌永远只出 30.02 秒 | 当年接过 Apple 的 30 秒试听段当兜底；网易云 VIP 曲取不到音频时立刻退回试听 | **直接删掉试听源**，只留网易云 + 本地目录；VIP 曲现在明确报"需要 VIP"并引导扫码登录 |
-| 插件里填 240，实际只唱 180 | ③ `config.maxSeconds` 是 180，`runSingJob` 用 `Math.min` 把它夹回去了 | ③ 提到 300；`/health` 报出 `jobMaxSeconds` 便于核对 |
+| 插件里填 240，实际只唱 180 | ③ `config.maxSeconds` 是 180，`runSingJob` 用 `Math.min` 把它夹回去了 | ③ 提到 600（现在是默认值）；`/health` 报出 `jobMaxSeconds` 便于核对 |
 | 显存闸"加了但没效果" | 只写了 `sitecustomize.py` 和常量，`--gpu-fraction` 参数没定义、`run()` 也没传 → 等于没接线 | CLI 参数 + 传参补齐（分离、换声两处都传） |
 | 180 秒的歌跑了一半报"等太久" | 截止时间写成 `min(maxSeconds, cap) + 150000`，把"秒"直接加到"毫秒"上，实际只等了 150 秒 | 改成 `秒 × 1000 + 300000`（留 5 分钟余量） |
 | 网关进程莫名退出 | `/login/*` 写在全局 try 之外，网易云接口一抖动就是未捕获的 Promise 拒绝 | 单独 try/catch，返回 502 而不是崩进程 |
-| 控制台「扫码登录」报"令牌不对" | 登录接口只认请求头（`x-gateway-token` / `Authorization: Bearer`）；`?token=` 已移除，浏览器页面把令牌放在 `#` 后面 | 三种来源都认 |
+| 控制台「扫码登录」报"令牌不对" | 用了 `?token=` 打开页面 —— 登录接口和页面都不再接受查询参数里的令牌 | 页面改成 `/login#token=<令牌>`（`#` 后面的部分不发给服务器），接口只认 `x-gateway-token` / `Authorization: Bearer` |
 | 插件 import 二维码库报 `does not provide an export named 'default'` | 仓库 `package.json` 是 `type=module`，UMD 的 `.js` 被当 ESM 解析 | 改名 `qrcode.cjs` + `createRequire` |
 | 机器人说"才一秒"，但语音条显示 1'30" | 宿主按 `Math.round(text.length / 4)` 估时长，「唱：夜曲」4 个字 → 1 秒 | 网关回 `x-audio-seconds` 真实时长，宿主优先用它（宿主侧改动见 `qq-agent-plus` 仓库 `feat/tts-audio-seconds` 分支） |
 | `fetch failed`（约 50% 概率） | 服务器只有 IPv6 无出口 + Node Happy Eyeballs 默认 250ms 尝试超时 | 宿主 `NODE_OPTIONS=--dns-result-order=ipv4first --network-family-autoselection-attempt-timeout=5000`（实测 12/12 通过） |

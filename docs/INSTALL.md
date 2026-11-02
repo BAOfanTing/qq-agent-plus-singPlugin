@@ -97,7 +97,8 @@ gateway/              跑在你电脑上的换声网关（零依赖 Node）
   lib/config.mjs      配置读写与校验
   lib/sources.mjs     音源：网易云 / 本地目录（含搜索排序打分）
   lib/voice.mjs       换声：none（直出）/ command（调你的 RVC 命令行）
-  lib/app.mjs         路由 + 流水线（/health /search /sing /jobs /files /v1/audio/speech /admin/prune /login*）
+  lib/app.mjs         路由 + 流水线（/health /search /sing /jobs /files /v1/audio/speech
+                      /say/status /say/voices /say/config /admin/voice-seconds /admin/prune /login*）
   web/login.html      网易云扫码登录页（二维码在本地渲染，key 不出本机）
   web/qrcode.js       内置 QR 生成库（MIT，离线可用，不依赖任何 CDN）
   plugin/sing/vendor/qrcode.cjs  插件自带的 QR 库（控制台「扫码登录」用；.cjs 是因为仓库是 type=module）
@@ -112,7 +113,7 @@ docs/TROUBLESHOOTING.md  排错（含容器化 OneBot 发文件失败那个坑�
 docs/TUNING.md       调优与踩坑笔记（时长四道闸、显存、历史踩坑、验收清单）
 scripts/bridge-container-paths.sh  把插件媒体目录桥接进 OneBot 容器
 start-gateway.bat / start-tunnel.bat  Windows 一键启动
-test/                 32 个用例（含"子进程跑插件、测试扮演宿主"的真协议测试）
+test/                 41 个用例（含"子进程跑插件、测试扮演宿主"的真协议测试）
 ```
 
 ---
@@ -174,8 +175,10 @@ conda run -n rvc python -m pymss.cli download model_bs_roformer_ep_368_sdr_12.96
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File sing-model/fetch-chunks.ps1 `
-  -Url "https://mirrors.nju.edu.cn/pytorch/whl/cu128/torch-2.7.1%2Bcu128-cp312-cp312-win_amd64.whl" `
-  -Out "sing-model/downloads/torch-2.7.1+cu128-cp312-cp312-win_amd64.whl"
+  -Url "https://mirrors.nju.edu.cn/pytorch/whl/cu128/torch-2.9.1%2Bcu128-cp311-cp311-win_amd64.whl" `
+  -Out "sing-model/downloads/torch-2.9.1+cu128-cp311-cp311-win_amd64.whl"
+# 文件名里的 cp311 是 Python 版本：环境是 3.11 用 cp311，是 3.12 就换成 cp312
+# （版本以 requirements.txt 为准：torch==2.9.1+cu128）
 # 下完核对官方 sha256（PyTorch 索引页里有），不一致就重下
 ```
 
@@ -215,17 +218,19 @@ cp config.example.json config.json
 | `voice.defaultVoice` | 默认音色名（例如 `hanser`） |
 | `outputArtist` | 群里显示的「演唱者」名字，默认 **小鲸鱼**（原唱信息只留在"原唱受限"说明里） |
 | `transcode` | `auto`（有 ffmpeg 就转 mp3 并裁剪）/ `never` |
-| `maxSeconds` | 群文件通道最长时间（默认 150 秒） |
-| `voiceMessageMaxSeconds` | 语音条通道硬上限，默认 300 秒（插件推上来的值会被它夹紧） |
+| `maxSeconds` | 群文件通道最长时间（默认 **600** 秒，上限也被夹在 600） |
+| `voiceMessageMaxSeconds` | 语音条通道硬上限，默认 **600** 秒（插件推上来的值会被它夹紧） |
 | `voiceMessageDefaultSeconds` | 语音条默认时长，默认 90 秒（插件没推值时用它；0 = 整首由插件设置决定） |
 | `voice.segmentSeconds` | 长音频切段长度，默认 **30** 秒（整批只加载一次模型；设 0 = 不分段） |
 | `voice.serveCommand` | 常驻换声命令（`"<rvc的python>" "<仓库>/sing-model/run.py" --serve`）；留空 = 每次起进程 |
 | `voice.serveIdleMs` | 常驻进程空闲多久自动退出，默认 600000（10 分钟） |
 | `voice.gpuFraction` | 常驻进程的显存上限比例，默认 0.9 |
-| `say.engine` | `breeze`（云端 Breeze TTS 2，**唯一实现**）/ `none`（关掉，只说文字） |
+| `say.engine` | `auto`（默认，云端优先 + 本地兜底）/ `breeze`（只云端）/ `breeze-local`（只本地权重）/ `none`（关掉，只说文字） |
 | `say.breezeKey` / `say.voiceId` | Breeze API Key 与音色 id；**在插件设置里填更省事**（插件会推到网关） |
-| `say.voice` | 语音名，留空用系统默认（中文系统一般是 `Microsoft Huihui Desktop`） |
-| `filesTtlHours` | 成品保留小时数（默认 24，另有每天 0 点清理） |
+| `say.pitchTarget` / `say.pitchMaxShift` | 本地音高高的小幅归一（目标 Hz / 最多改几个半音，默认 355 / 2.5，`0` = 关） |
+| `say.registerMin` / `registerMax` / `registerRetries` | 本地音区守门：合成后测基频，不在 330-385 Hz 就换 seed 重生成（默认 2 次） |
+| `filesTtlHours` | 成品保留小时数（默认 24） |
+| `filesPruneMinAgeHours` | 清理只删**超过这么多小时**的成品（默认 8）。按文件年龄而不是自然日零点，避免 23:59 的歌 00:01 就没了 |
 
 本机这套的实际配置（供对照）：
 
@@ -336,11 +341,17 @@ curl -X POST http://127.0.0.1:3210/api/plugins/settings \
 ```bash
 curl -X POST http://127.0.0.1:3210/api/config \
   -H "x-console-token: $TOKEN" -H 'Host: 127.0.0.1:3210' -H 'content-type: application/json' \
-  -d '{"tts":{"timeoutMs":180000}}'
+  -d '{"tts":{"timeoutMs":600000}}'
 ```
 
-网关对 `/v1/audio/speech` 的处理：认出「唱：歌名」就跑唱歌流水线并返回音频；
-**认不出（普通说话）会明确返回 400**，宿主会退回发文字。
+网关对 `/v1/audio/speech` 的处理：
+
+- 认出「唱：歌名」→ 跑唱歌流水线，返回音频字节
+- **认不出（普通文本）→ 交给 TTS 读出来**（`say.engine` 为 `auto`/`breeze`/`breeze-local` 时）
+- 只有 `say.engine = none` 时才返回 400，宿主退回发文字
+
+> 注意：正因为普通文本也走这里，`intent.bareTitle` 默认关闭 —— 否则模型回一句「好的」
+> 会被当成歌名去唱歌（见 TUNING.md）。
 
 ### 1.10 服务器端：把媒体目录桥接进 OneBot 容器（发群文件必须）
 
@@ -403,11 +414,11 @@ su - qqagent -c 'export XDG_RUNTIME_DIR=/run/user/$(id -u); systemctl --user dae
 
 | # | 位置 | 截什么 | 注意 |
 |---|---|---|---|
-| 1 | 控制台 → 插件 → 点歌唱歌 | 插件卡片 + 「已启用」状态 + 四个工具名 | 别把「网关令牌」框截进去（截到也请打码） |
+| 1 | 控制台 → 插件 → 点歌唱歌 | 插件卡片 + 「已启用」状态 + 七个工具名 | 别把「网关令牌」框截进去（截到也请打码） |
 | 2 | 控制台 → 设置 → 语音回复 (TTS) | 服务地址 `…/v1`、模型/音色 `hanser`、超时 180000 | **API Key 打码**；域名可以打码成 `https://***.trycloudflare.com` |
 | 3 | 网关的 `/login` 页面 | 二维码 + "请用网易云 App 扫一扫" | 二维码最好打码（扫了会用你的账号登录） |
 | 4 | QQ 群里的实际效果 | 用户那句「用语音唱一首雨爱」+ 收到的语音条 | 群名/昵称打码；这条最能说明"能用" |
-| 5 | 网关控制台窗口 | `点歌网关 v0.1.0 已启动` + `[req] · POST /v1/audio/speech → 200 (24s)` | 这条是"链路真的通了"的证据 |
+| 5 | 网关控制台窗口 | `点歌网关 v1.0.5 已启动` + `[req] · POST /v1/audio/speech → 200 (2s)` | 这条是"链路真的通了"的证据 |
 | 6 | （可选）`sing-model` 目录 | 权重与模型文件摆位 | 别截图 `downloads/`（3GB 缓存，看着吓人） |
 
 > 建议顺序：**2 → 1 → 4 → 3**（先看配置，再看群效果，最后看登录）。

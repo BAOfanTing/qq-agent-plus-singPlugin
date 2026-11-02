@@ -49,7 +49,7 @@ QQ 群 ──► 宿主(服务器) ──► 插件 sing ───────�
 
 | 通道 | 触发方式 | 产出 | 走哪条路 |
 |---|---|---|---|
-| **唱歌 · 语音条**（默认） | 「用语音唱一首 X」 | QQ 语音气泡 | 本机 RVC 换声；默认唱**整首**（实测 4:21 完整歌能收播），整首 3:54 约 22 秒 |
+| **唱歌 · 语音条**（默认） | 「用语音唱一首 X」 | QQ 语音气泡 | 本机 RVC 换声；默认唱**整首**（实测 4:21 完整歌能收播），整首 3:54 常驻换声约 22 秒（冷启动端到端约 43 秒） |
 | **唱歌 · 群文件** | 「点歌唱一首 X」 | mp3 文件 | 同上，但要先在插件设置里打开「允许发群文件」；工具超时 300 秒 |
 | **说话** | 机器人自己想说话（任何非点歌内容） | QQ 语音气泡 | Breeze TTS 2：云端 3-6 秒/句，或本机 11-16 秒/句（8.2 GB 显存，闲置自退） |
 
@@ -74,7 +74,7 @@ powershell -ExecutionPolicy Bypass -File scripts\sync-host-url.ps1 -SshHost root
 
 五步，详细命令在 **[docs/INSTALL.md](docs/INSTALL.md)**：
 
-1. **电脑端**：Python 3.12 环境 + RVC 资产（hubert/rmvpe/分离模型）+ 你的 `.pth` 音色 — [1](docs/INSTALL.md)
+1. **电脑端**：Python 3.11 环境 + RVC 资产（hubert/rmvpe/分离模型）+ 你的 `.pth` 音色 — [1](docs/INSTALL.md)
 2. **电脑端**：`gateway/config.json` 填令牌、音色、换声命令 — [2](docs/INSTALL.md)
 3. **电脑端**：起网关 `start-gateway.bat`，起隧道 `start-tunnel.bat` — [3](docs/INSTALL.md)
 4. **服务器端**：`plugin/sing` 放进 `data/plugins/`，控制台启用并填网关地址 + 令牌 — [4](docs/INSTALL.md)
@@ -90,14 +90,14 @@ powershell -ExecutionPolicy Bypass -File scripts\sync-host-url.ps1 -SshHost root
 
 ## 实测数据
 
-RTX 3080 10G / Windows / v1.0.4：
+RTX 3080 10G / Windows / v1.0.5：
 
 | 环节 | 耗时 |
 |---|---|
 | 网易云搜歌 | < 1 秒 |
 | 人声分离（BS-Roformer 368） | 30 秒歌约 3-6 秒（RTF 0.10） |
 | RVC 换声（hanser，30 秒片段） | 约 4 秒（另加 6-8 秒模型加载） |
-| **端到端（点歌 → 群里收到）** | **12 秒**（45 秒成品）/ **22 秒（整首 3:54）**（常驻换声后） |
+| **端到端（点歌 → 群里收到）** | **12 秒**（45 秒成品）/ **22 秒**（整首 3:54，常驻换声；冷启动约 43 秒） |
 | QQ 语音条时长实测 | **4:21（261 秒）的整首能正常收播**；网关侧上限 600 秒，更长的还没试到上限 |
 | **说话（云端 Breeze）** | 3-6 秒/句（不占显存） |
 | **说话（本地 Breeze）** | 11-16 秒/句（5 秒音频，RTF≈3）；闲置 1 分钟后自动退出，之后再说话要 35 秒重新加载 |
@@ -150,7 +150,7 @@ RTX 3080 10G / Windows / v1.0.4：
 4. **本地说话闲置会退出**：默认 1 分钟后释放显存，之后再说话要重新加载（约 35 秒/句）；`say.localIdleMs = 0` 可改为常驻。
 5. **VIP 曲需要登录**：没登录态取不到原唱时会先找同曲可播版本，都不行就明确提示扫码登录。
 6. **版权自负**：`.pth` 音色权重、翻唱成品、Breeze 云端额度的使用范围请自行确认（Breeze 免费版**禁止商用**）。
-7. **长歌会分段换声**：超过「段长+5 秒」自动切成 **30 秒**一段，整个批次只加载一次模型（`infer.cli` 的目录批处理），失败只补跑缺的那几段，最后拼回整条。整首 3:54 约 22 秒。
+7. **长歌会分段换声**：超过「段长+5 秒」自动切成 **30 秒**一段，整个批次只加载一次模型（`infer.cli` 的目录批处理），失败只补跑缺的那几段，最后拼回整条。整首 3:54 约 22 秒（常驻；冷启动端到端约 43 秒）。
 
 ## 文档
 
@@ -165,6 +165,7 @@ RTX 3080 10G / Windows / v1.0.4：
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | 运行期报错：说话没声音、宿主 524、文件 ENOENT、只有原声没换声、超时 |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | 插件 ↔ 网关 HTTP 契约（想用别的语言重写后端看这个） |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 本地跑测试、代码结构 |
+| [CHANGELOG.md](CHANGELOG.md) | 每个版本做了什么（Release 正文就从这里抽） |
 
 ## License
 

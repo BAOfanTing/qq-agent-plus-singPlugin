@@ -1,10 +1,11 @@
 > **网易云登录**：在控制台插件页点「扫码登录」，用手机**网易云 App** 扫码即可（二维码由本插件本地生成，不上传任何数据）。
 > 面板标题里出现的「B 站」是宿主界面的固定文案，不影响登录；也可以直接打开 `<网关地址>/login#token=<网关令牌>` 扫码。
-# 点歌唱歌（v1.0.4）
+# 点歌唱歌（v1.0.5）
 
 > ⚠️ 本插件只是薄客户端：**换声模型和网关必须在你自己的电脑上跑**（同一仓库的 `gateway/` + `sing-model/`）。服务器不装模型；本机没开时只会回「后端离线」。
 
-群里说一句「唱一首 XXX」，机器人用你自己电脑上的换声模型翻唱，成品以**群文件**发出来。
+群里说一句「唱一首 XXX」，机器人用你自己电脑上的换声模型翻唱，成品**默认以语音条发出来**
+（「发语音条」是默认通道；「发群文件」要手动打开 `allowFileOutput`，这两条走不同的宿主接口）。
 
 - 插件 id：`sing` · `apiVersion: 2` · 入口 `index.mjs`
 - 宿主要求：qq-agent-plus ≥ `0.9.10`（用到 `cap.media.download` / `cap.send.file` / `secrets` / 工具级 `timeoutMs`）
@@ -31,7 +32,7 @@
 
 | 能力 | 为什么需要 |
 |---|---|
-| `tools` | 给模型三个工具 |
+| `tools` | 给模型七个工具 |
 | `http` | 调你自己的点歌网关（宿主**强制禁内网**，所以网关必须是公网 https） |
 | `media` | 把换声成品下载到 `plugin-data/sing/media/`（宿主规定：插件只能发这个目录里的文件） |
 | `send` | 用 `cap.send.file` 把成品发到群（**只支持群聊**） |
@@ -66,7 +67,7 @@
 | `breezePassword` | secret | Breeze 账号密码；只用来调官网登录接口换会话，加密存宿主 |
 | `breezeAutoClaim` | boolean | 每小时自动领一次每日额度（幂等），默认开 |
 | `defaultVoice` | text | 唱歌音色名，留空用网关默认值 |
-| `maxSeconds` | number | 单次换声上限，默认 60，范围 5-180 |
+| `maxSeconds` | number | 单次换声上限，默认 60，范围 **5-280**（群文件路径受插件工具 300 秒超时限制） |
 | `voiceSeconds` | number | 语音条秒数，0 = 整首（默认） |
 | `pollIntervalMs` | number | 轮询间隔，默认 2000（1-10 秒） |
 | `allowInsecureHttp` | boolean | 仅调试用；内网地址照样会被宿主拦住 |
@@ -79,8 +80,8 @@ cp -r plugin/sing "$DATA_DIR/plugins/sing"
 
 # 或者走宿主自己的打包 + 安装器（推荐）
 node <qq-agent-plus>/scripts/plugin-pack.mjs ./plugin/sing \
-  --base-url https://github.com/BAOfanTing/qq-agent-plus-singPlugin --tag v0.1.0
-node <qq-agent-plus>/src/ops.js plugins install sing-0.1.0.tar.gz
+  --base-url https://github.com/BAOfanTing/qq-agent-plus-singPlugin --tag v1.0.5
+node <qq-agent-plus>/src/ops.js plugins install sing-1.0.5.tar.gz
 ```
 
 装完在控制台「插件」页确认信任（首次加载会提示它要联网、能发文件），再去设置里填网关地址。
@@ -102,6 +103,6 @@ cd ../.. && node --test test/plugin-protocol.test.mjs
 | 网关没起来 / 隧道断了 | 「网关返回失败：…」，模型会告诉用户后端离线；**文字聊天不受影响** |
 | 令牌不对 | 「网关拒绝了请求：令牌不对…」 |
 | 换声失败（显存不够、模型路径错） | 网关返回 `failed` + 原因，插件原样转给模型 |
-| 等了 160 秒还没好 | 「等换声超时…把 maxSeconds 调小再试」，不等宿主硬杀进程 |
+| 等了 280 秒还没好 | 「等换声超时…把 maxSeconds 调小再试」，不等宿主硬杀进程 |
 | 在私聊里点歌 | 直接拒绝并说明"只能群聊"（宿主 `send.file` 的限制） |
 | 网关给了无法识别的任务状态 | 按失败处理并说明原因，绝不假装在跑 |

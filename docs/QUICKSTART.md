@@ -81,7 +81,7 @@ powershell -ExecutionPolicy Bypass -File scripts\sync-host-url.ps1 -SshHost root
 它从 `logs\cloudflared.log` 里读最新地址并同步到服务器，不用手抄。
 
 嫌麻烦就改用 **ssh -R 专线**（地址永不变、无 100 秒上限），见 [TUNNEL.md](TUNNEL.md)「备用专线」。
-实测快速隧道跑整首 3:54 只要 43 秒，**不会**撞上 100 秒上限；只有极端情况（模型冷启动 + 长歌）才会 524。
+实测整首 3:54 的歌走隧道端到端约 **43 秒**（**含冷启动**；换声进程常驻后约 22 秒），**不会**撞上 Cloudflare 的 100 秒上限；只有极端情况（冷启动 + 超长歌）才会 524。
 
 ## 想改配置
 
@@ -97,7 +97,7 @@ powershell -ExecutionPolicy Bypass -File scripts\sync-host-url.ps1 -SshHost root
 | `say.registerMin` / `registerMax` / `registerRetries` | 本地音区守门：合成后测基频，不在 330-385 Hz 就换 seed 重生成（最多 2 次，仅对 ≤12 秒音频） |
 | `say.localIdleMs` | 本地模型闲置多久退出，默认 `60000`（1 分钟）；`0` = 常驻不退 |
 | `say.splitSentences` / `maxSegmentChars` | 长回复是否按句切开分别合成（**默认关**）：开会更快拉平音高，但一条消息里音色会变，不建议 |
-| `say.pitchTarget` / `pitchMaxShift` | 音高归一：把每句基频拉齐到目标 Hz（如 `355`，`0` = 关）；最大改动半音数默认 `3`，本地实测设 **6** 才够 |
+| `say.pitchTarget` / `pitchMaxShift` | 音区微调：目标 Hz（如 `355`，`0` = 关）与最大改动半音数（默认 **2.5**）。只做小幅微调，超出就不动 —— 长文本那种 4-6 半音的偏差强行抬会明显走味，靠 `say.registerMin/Max` 换 seed 解决 |
 | `voice.defaultVoice` | 唱歌音色，即 `sing-model/weights` 里 `.pth` 的文件名 |
 
 改完重启：`schtasks /End /TN QQAgentSingGateway` → `schtasks /Run /TN QQAgentSingGateway`

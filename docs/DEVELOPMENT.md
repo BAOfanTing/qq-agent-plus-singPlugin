@@ -1,7 +1,7 @@
 # 开发与测试
 
 ```bash
-node --test            # 35 个用例：插件纯函数 / 网关队列 / 网关路由 / 真协议集成
+node --test            # 41 个用例：插件纯函数 / 网关队列 / 网关路由 / 真协议集成
 node gateway/server.mjs
 
 # 宿主侧的验证工具（在 qq-agent-plus 仓库里跑）
@@ -50,3 +50,12 @@ node /path/to/qq-agent-plus/scripts/plugin-publish.mjs plugin/sing \
   --homepage https://github.com/BAOfanTing/qq-agent-plus-singPlugin --tags 点歌,唱歌,语音
 # 确认无误后加 --push，再按提示 gh release upload packages plugins/packages/sing-<版本>.tar.gz
 ```
+
+## 发版
+
+1. 在 `CHANGELOG.md` 顶部加一节 `## [x.y.z] - 日期`（**标题格式别改**，发布工作流按它抽取正文）
+2. 同步版本号：`package.json`、`plugin/sing/plugin.json`、`gateway/lib/app.mjs` 的 `VERSION`
+3. `git tag vx.y.z && git push origin main --tags` —— 工作流会跑测试、用宿主的打包器真装一遍、
+   建 Release（正文 = CHANGELOG 该节 + 安装说明 + compare 链接）、挂上 `.tar.gz` 与 `index-entry.json`
+
+> 想先看正文长什么样：`node scripts/release-notes.mjs x.y.z --sha256 <hex>`

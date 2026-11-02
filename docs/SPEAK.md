@@ -52,7 +52,7 @@ curl -H "xi-api-key: brz_xxx" https://api.breeze.blue/v1/voices
 
 ```json
 "say": {
-  "engine": "breeze",                        // breeze | none
+  "engine": "auto",                          // auto | breeze | breeze-local | none
   "breezeUrl": "https://api.breeze.blue",
   "breezeKey": "brz_xxxx",                   // 插件填过就以插件为准
   "voiceId": "voc_8yud7hz7c9q2",
@@ -81,7 +81,7 @@ body:  { text, model_id, language_code?, instructions?, voice_settings: { guidan
 |---|---|
 | `GET /say/status` | `{ online, hasKey, hasVoice, voiceId, balance, note }` —— 插件页"后端在线"就是它 |
 | `GET /say/voices` | 音色列表（转发 Breeze） |
-| `POST /say/config` | `{ apiKey?, voiceId? }` 插件推配置上来；空值表示"别改这一项" |
+| `POST /say/config` | `{ apiKey?, voiceId?, replace? }` 插件推配置上来；`replace: true` 表示完整覆盖（空值 = 清除该项） |
 
 
 ### 音色一致性问题（同样配置，两句听着不像一个人）
@@ -99,7 +99,7 @@ body:  { text, model_id, language_code?, instructions?, voice_settings: { guidan
 **解决办法：音高归一**（`say.pitchTarget`）
 
 ```json
-"say": { "pitchTarget": 355, "pitchMaxShift": 3 }
+"say": { "pitchTarget": 355, "pitchMaxShift": 2.5 }
 ```
 
 - 每句合成后测一次中位基频（`say-model/f0.py`），用 ffmpeg 的 `rubberband` 只改音高不改速度
@@ -233,7 +233,7 @@ POST https://breezeblue.ai/api/credits/daily-claim   {reward_tier:"discord"} →
 
 ## 本地部署（`say.engine: "breeze-local"`）
 
-不想花额度、或想离线跑，就把权重放本机。**代价是 7.7 GB 显存**（eager），
+不想花额度、或想离线跑，就把权重放本机。**权重 7.2 GB、运行占 7.9 GB 显存**（eager），
 所以和唱歌的 RVC 常驻（~2 GB）**不能同时用**——好在网关会在本地失败时自动退回云端。
 
 ### 1. 准备权重
@@ -248,7 +248,7 @@ audio_tokenizer\            ← 整个目录（缺它 load_runtime 直接报错�
    config.json  configuration.json  preprocessor_config.json  model.safetensors
 ```
 
-合计约 **7.8 GB**。下完先体检：
+合计约 **7.2 GB**。下完先体检：
 
 ```powershell
 E:\APP\Anaconda\envs\sing\python.exe say-model\check-ckpt.py
@@ -297,17 +297,9 @@ powershell -ExecutionPolicy Bypass -File say-model\start-local.ps1
 - 只有 `instructions` → **Voice Design**（纯文字描述造音色）
 - 本地挂了且配了 `breezeKey` → 自动退回云端，日志里会写 `[say] 本地 Breeze 失败，退回云端`
 
-### 3.5 让网关托管（推荐，按需加载 + 闲置退出）
+### 3.5 让网关托管（推荐：按需加载 + 闲置退出）
 
-本地模型不会一直占着显卡：**说话时才加载，闲置 `say.localIdleMs`（默认 60 秒）后自动退出**，
-把 8.2 GB 显存还回去。实测：说完一句话，70 秒后显存从 8.3 GB 掉回 1.6 GB。
-
-代价是"闲置后第一句"要重新加载（约 8 秒加载 + 首次请求预热，实测 36 秒/句），
-紧接着的第二句回到 12-16 秒。想常驻不退就把 `say.localIdleMs` 设成 `0`。
-
-### 3.5 让网关托管（推荐）
-
-不用自己开终端起 python —— 配好这两项，**网关会在需要时自己拉起/关掉**本地模型：
+不用自己开终端起 python —— 配好这几项，**网关会在需要时自己拉起/关掉**本地模型：
 
 ```json
 "say": {
@@ -319,6 +311,11 @@ powershell -ExecutionPolicy Bypass -File say-model\start-local.ps1
 ```
 
 `start-local.ps1` 只在你想手动调试时用；网关自己起的那份会把日志写到网关 stdout。
+
+**闲置退出**：本地模型不会一直占着显卡 —— 闲置 `localIdleMs`（默认 60 秒）后自动退出，
+把 8.2 GB 显存还回去（实测：说完一句，70 秒后显存从 8.3 GB 掉回 1.6 GB）。
+代价是"闲置后第一句"要重新加载（约 8 秒加载 + 预热，实测 36 秒/句），之后回到 12-16 秒；
+想常驻不退就把 `localIdleMs` 设成 `0`。
 
 ### 4. 和云端对比
 

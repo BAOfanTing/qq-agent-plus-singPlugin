@@ -12,9 +12,6 @@ export const DEFAULT_CONFIG = Object.freeze({
   // 说话（TTS）：非点歌的文本走这里，只走 Breeze 云端
   say: {
     engine: 'breeze',
-    voice: '',
-    rate: 0,
-    volume: 100,
     maxChars: 800,
     timeoutMs: 60000,
     // 说话也用她的音色：TTS 之后再过一遍换声（多 10-20 秒）
@@ -87,10 +84,7 @@ export function normalizeConfig(raw, { rootDir = process.cwd() } = {}) {
     // 说话：breeze=云端 / breeze-local=本机权重（带云端兜底）/ none=关掉
     say: {
       engine: ['none', 'breeze', 'breeze-local', 'auto'].includes(asString(sayInput.engine)) ? asString(sayInput.engine) : DEFAULT_CONFIG.say.engine,
-      voice: asString(sayInput.voice),
-      rate: asInt(sayInput.rate, DEFAULT_CONFIG.say.rate, -10, 10),
-      volume: asInt(sayInput.volume, DEFAULT_CONFIG.say.volume, 0, 100),
-      maxChars: asInt(sayInput.maxChars, DEFAULT_CONFIG.say.maxChars, 20, 5000),
+            maxChars: asInt(sayInput.maxChars, DEFAULT_CONFIG.say.maxChars, 20, 5000),
       // Breeze 云端 TTS（api.breeze.blue）
       breezeUrl: asString(sayInput.breezeUrl) || 'https://api.breeze.blue',
       breezeKey: asString(sayInput.breezeKey),

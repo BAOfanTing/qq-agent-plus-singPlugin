@@ -10,7 +10,7 @@ import { createVoiceEngine } from './voice.mjs';
 import { transcodeTo, probeSeconds, shiftPitch, concatAudio, runProcess } from './audio.mjs';
 import { createSayEngine } from './say.mjs';
 
-export const VERSION = '1.0.4';
+export const VERSION = '1.0.5';
 const WEB_DIR = path.join(import.meta.dirname, '..', 'web');
 const NETEASE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const MAX_BODY_BYTES = 8 * 1024;
@@ -1019,7 +1019,8 @@ export function createApp({
         return;
       }
 
-      // 插件把设置里的 Breeze Key / 音色推上来（幂等；空值表示"别改这一项"）
+      // 插件把设置里的 Breeze Key / 音色推上来（幂等）。带 replace:true 时完整覆盖、空值=清除；
+// 插件永远带 replace —— 它把自己当作唯一真相源。
       if (pathname === '/say/config' && req.method === 'POST') {
         const body = await readJsonBody(req);
         if (typeof say.setCredentials === 'function') {

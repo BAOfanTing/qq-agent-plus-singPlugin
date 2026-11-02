@@ -12,14 +12,15 @@
 **免鉴权**（方便排查隧道通不通），只暴露"在不在、什么引擎"：
 
 ```json
-{ "ok": true, "version": "1.0.4",
-  "engine": "command", "say": "windows", "voiceConfigured": true, "voices": ["hanser"],
+{ "ok": true, "version": "1.0.5",
+  "engine": "command", "say": "auto", "voiceConfigured": true, "voices": ["hanser"],
   "source": "netease", "transcode": "auto", "jobs": 0,
   "voiceSeconds": 0, "voiceFullSong": true, "voiceMaxSeconds": 600, "jobMaxSeconds": 600 }
 ```
 
 - `engine` / `voices` —— 换声引擎与可用音色（`engine: "none"` 表示没接换声，只能搬运音源）
-- `say` —— 说话引擎（`breeze` = Breeze TTS 2 云端；`none` = 关掉）
+- `say` —— 说话引擎，四选一：`auto`（云端优先、失败落本地，默认）/ `breeze`（只云端）/
+  `breeze-local`（只本地权重）/ `none`（关掉，普通文本返回 400）
 - `voiceSeconds` —— 语音条当前生效时长（`0` + `voiceFullSong: true` = 整首）
 - `voiceMaxSeconds` / `jobMaxSeconds` —— 两道上限，插件推的值会被它们夹住
 
@@ -100,8 +101,8 @@ Content-Type: application/json
 
 宿主给插件工具的超时默认 3 分钟（本插件 `sing_song` 声明 300 秒）。整首 4 分钟的歌分段换声（每段 30 秒、模型只加载一次）在 3080 上约 22 秒（换声常驻时），
 冷启动会多十几秒，CPU 上可能好几分钟 —— 同步接口会让调用方卡在超时上，还看不到进度。
-所以：**提交拿 jobId → 每 1-2 秒问一次 → 完成再下载**。插件在轮询到 `180s - 20s` 时会主动放弃并
-回一句"歌太长或电脑在忙"，而不是让宿主硬杀进程。
+所以：**提交拿 jobId → 每 1-2 秒问一次 → 完成再下载**。插件工具超时 300 秒、预留 20 秒收尾，
+即轮询到 `300s - 20s = 280s` 主动放弃并回一句"歌太长或电脑在忙"，而不是让宿主硬杀进程。
 
 ## GET /say/status ・ GET /say/voices ・ POST /say/config
 
@@ -109,14 +110,39 @@ Content-Type: application/json
 
 ```json
 // GET /say/status
-{ "ok": true, "engine": "breeze-local", "online": true, "hasKey": true, "hasVoice": true,
-  "voiceId": "", "model": "breeze-tts-2", "balance": null,
-  "note": "闲置中，说话时自动加载", "cloudFallback": true,
+{ "ok": true, "engine": "breeze", "online": true, "hasKey": true, "hasVoice": true,
+  "voiceId": "voc_xxx", "model": "breeze-tts-2", "balance": 1796.0,
+  "note": "", "mode": "cloud",                 // mode: cloud | local（auto 模式下实际走哪条）
   "localRunning": false, "idleMs": 60000 }
 
 // GET /say/voices  → { "ok": true, "items": [ { "id": "voc_xxx", "name": "大肥鱼（迷糊版）" } ] }
-// POST /say/config → { "apiKey": "brz_…", "voiceId": "voc_xxx" }（空值表示"别改这一项"）
+// POST /say/config → { "apiKey": "brz_…", "voiceId": "voc_xxx", "replace": true }
+//   带 replace:true 时按"完整覆盖"处理：空字符串 = 清除该项（插件永远带 replace，
+//   因为它把自己当作唯一真相源）；不带 replace 时只更新非空项。
 ```
 
 `online` 的语义是「**能不能服务**」：本地模型闲置退出后进程不在，但只要 python 与权重路径配好，
 仍然报 `online: true` 并附 `note`。`balance` 只有云端才有值。
+
+## POST /admin/voice-seconds ・ POST /admin/prune ・ /login/*
+
+这三组不在「唱歌 / 说话」主链路上，但插件依赖它们 —— 重写后端时漏掉，插件的
+「语音条秒数推送」「零点清理」「扫码登录」会全部哑掉。
+
+```json
+// POST /admin/voice-seconds   { "seconds": 30 }        ← 0 = 整首
+// → { "ok": true, "seconds": 30 }
+
+// POST /admin/prune           {}                        ← 清理旧成品
+// → { "ok": true, "removed": 3 }
+//   只删「超过 filesPruneMinAgeHours（默认 8 小时）」的成品。别按自然日零点删：
+//   23:59 唱完的歌会在 00:01 被删，而插件可能正好那时来下载（404）。
+
+// GET  /login                扫码页面（静态 HTML，本身不需要令牌）
+// POST /login/start          → { "ok": true, "key": "…", "loginUrl": "https://music.163.com/login?codekey=…" }
+// GET  /login/status?key=…   → { "ok": true, "state": "waiting | scanned | expired | ok", … }
+// POST /login/logout         → 清掉已存的网易云 Cookie
+```
+
+`/login/*` **只认请求头**（`x-gateway-token` 或 `Authorization: Bearer`），不接受 `?token=`
+（URL 查询参数会留在浏览器历史、隧道日志与 Referer 里）；扫码页面自己从 `location.hash` 取令牌。
