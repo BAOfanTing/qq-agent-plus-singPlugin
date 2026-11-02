@@ -38,7 +38,10 @@ function section(text, ver) {
 
 const changelog = readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
 const body = section(changelog, version);
-const prev = changelog.match(new RegExp(`^##\\s*\\[([0-9.]+)\\]`, 'm'));
+// "上一版" = 当前版本之后出现的那一节（CHANGELOG 是倒序，第一条就是当前版本）
+const allVersions = [...changelog.matchAll(/^##\s*\[([0-9.]+)\]/gm)].map((m) => m[1]);
+const at = allVersions.indexOf(version);
+const previous = at >= 0 ? allVersions[at + 1] : allVersions[0];
 
 const install = [
   '## 安装',
@@ -54,9 +57,10 @@ const install = [
 ].join('\n');
 
 const parts = [body || `## v${version}\n\n（CHANGELOG.md 里没有 ${version} 这一节，请补上）`, '', install];
-if (prev && prev[1] !== version) {
-  parts.push('', `**Full Changelog**: [v${prev[1]}...v${version}]`
-    + `(${process.env.GITHUB_SERVER_URL || 'https://github.com'}/${process.env.GITHUB_REPOSITORY || 'BAOfanTing/qq-agent-plus-singPlugin'}/compare/v${prev[1]}...v${version})`);
+if (previous && previous !== version) {
+  const repo = `${process.env.GITHUB_SERVER_URL || 'https://github.com'}`
+    + `/${process.env.GITHUB_REPOSITORY || 'BAOfanTing/qq-agent-plus-singPlugin'}`;
+  parts.push('', `**Full Changelog**: [v${previous}...v${version}](${repo}/compare/v${previous}...v${version})`);
 }
 process.stdout.write(parts.join('\n') + '\n');
 
